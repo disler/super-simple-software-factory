@@ -106,8 +106,14 @@ def _context_tokens(usage: dict) -> int:
 
 
 def context_window(provider: str, model_id: str) -> int:
-    """The model's context ceiling from pi's merged model catalog."""
-    registry = json.loads(Path(MODELS_JSON).read_text())
+    """The model's context ceiling from pi's merged model catalog.
+
+    models.json is pi's hook for CUSTOM models and does not exist on a fresh
+    install, so it is optional — the `_pi_catalog()` pass below covers every
+    built-in model on its own.
+    """
+    models_json = Path(MODELS_JSON).expanduser()
+    registry = json.loads(models_json.read_text()) if models_json.is_file() else {}
     for model in registry.get("providers", {}).get(provider, {}).get("models", []):
         if model.get("id") == model_id:
             return int(model.get("contextWindow") or 0)
