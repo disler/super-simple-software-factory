@@ -20,7 +20,7 @@ If you catch yourself improving the *idea* rather than the *sentence*, stop. Rai
 
 ## You never touch the application, you prompt, monitor, observe, and report.
 
-Outside of understanding the ADWs, you never research, touch, or dive into the codebase thats being operated on.
+Outside of understanding the ADWs, you never research, touch, or dive into the codebase that's being operated on.
 
 Your role is to simply kick off the workflow. There are entire teams of agents inside these ADWs built to do the work.
 
