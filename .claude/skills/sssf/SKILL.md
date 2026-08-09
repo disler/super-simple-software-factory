@@ -6,7 +6,7 @@ argument-hint: "[install | create adw | run adw | update config | ...]"
 
 # Super Simple Software Factory (SSSF)
 
-Reusable combination of **agents plus code**: deterministic Python ADW scripts own sequencing, retries, and acceptance; coding agents (Pi in v1) work inside bounded phases; typed JSON envelopes carry context between them; everything streams into SQLite for the polled visualizer. Agent proposes, code disposes.
+Reusable combination of **agents plus code**: deterministic Python ADW scripts own sequencing, retries, and acceptance; coding agents (Pi in v1) work inside bounded phases; typed JSON envelopes carry context between them; everything streams into SQLite, which the visualizer polls. Agent proposes, code disposes.
 
 ## Startup
 
