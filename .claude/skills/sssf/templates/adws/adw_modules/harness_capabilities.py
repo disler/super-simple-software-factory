@@ -49,10 +49,10 @@ def resolve_capabilities(profile: HarnessProfile) -> ResolvedCapabilities:
     Example: ``resolve_capabilities(profile).sandbox`` returns its access mode.
     """
     portable, extras = _resolve_tools(profile)
-    native_tools = _native_tools(profile.harness, portable, extras)
     _validate_profile(profile.harness, portable, profile.extensions)
+    native_tools = _native_tools(profile.harness, portable, extras)
     return ResolvedCapabilities(portable=portable, native_tools=native_tools,
-                                sandbox=infer_sandbox(profile.writes))
+                                sandbox=_resolved_sandbox(profile, portable))
 
 
 def _resolve_tools(
@@ -107,3 +107,23 @@ def _validate_profile(harness: HarnessName, portable: frozenset[PortableCapabili
         raise HarnessConfigError(
             harness, sorted(portable), "inspection or mutation capability profile",
         )
+
+
+def _resolved_sandbox(profile: HarnessProfile,
+                      portable: frozenset[PortableCapability]) -> SandboxAccess:
+    if profile.harness != "codex":
+        return infer_sandbox(profile.writes)
+    return _codex_sandbox(profile, portable)
+
+
+def _codex_sandbox(profile: HarnessProfile,
+                   portable: frozenset[PortableCapability]) -> SandboxAccess:
+    if portable == CODEX_INSPECTION and profile.writes == []:
+        return "read-only"
+    if portable == CODEX_MUTATION and profile.writes != []:
+        return "workspace-write"
+    value = {"tools": sorted(portable), "writes": profile.writes}
+    expected = ("Codex inspection tools [read, search, shell] with writes: [], "
+                "or mutation tools [read, search, shell, write, edit] with writes omitted "
+                "or a non-empty path list")
+    raise HarnessConfigError("codex", value, expected)

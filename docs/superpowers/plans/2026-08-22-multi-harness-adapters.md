@@ -184,7 +184,7 @@ CODEX_INSPECTION = frozenset({"read", "search", "shell"})
 CODEX_MUTATION = frozenset({"read", "search", "shell", "write", "edit"})
 ```
 
-`tools=None` resolves to the full portable set. Pi may additionally retain tool names registered by its own non-empty extension list. Claude Code and Codex reject all extension tool names. Codex accepts exactly the inspection or mutation profile.
+`tools=None` resolves to the full portable set. Pi may additionally retain tool names registered by its own non-empty extension list. Claude Code and Codex reject all extension tool names. Codex accepts inspection only with `writes: []`, and mutation only with writes omitted or non-empty.
 
 `resolve_capabilities(profile)` returns `ResolvedCapabilities`. `infer_sandbox(writes)` returns `"read-only"` only for `writes == []`; a path list or omitted key returns `"workspace-write"`.
 
@@ -379,7 +379,7 @@ Expected: Claude Code reports at least 2.1.205 and compilation exits 0.
 
 - [ ] **Step 1: Implement strict profile validation**
 
-Use `CODEX_PATH = os.environ.get("CODEX_PATH", "codex")`. Accept CLI efforts `minimal`, `low`, `medium`, `high`, and `xhigh`. Require exactly the inspection or mutation capability profile defined in Task 1; reject `harness_engineering` and extension tool names.
+Use `CODEX_PATH = os.environ.get("CODEX_PATH", "codex")`. Accept CLI efforts `minimal`, `low`, `medium`, `high`, and `xhigh`. Require exactly the inspection/read-only or mutation/workspace-write capability pair defined in Task 1; reject `harness_engineering` and extension tool names.
 
 - [ ] **Step 2: Write the schema and construct new/resume commands**
 

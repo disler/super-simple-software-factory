@@ -186,8 +186,10 @@ Os adapters inferirão as permissões:
   confiáveis exigem isolamento externo;
 - Claude Code usa tools restritas, modo não interativo, sandbox nativo e falha
   se o sandbox exigido não estiver disponível;
-- Codex usa `read-only` ou `workspace-write` com `approval_policy=never`, sem a
-  opção que desativa o sandbox.
+- Codex usa `read-only` somente com o perfil de inspeção e `writes: []`; usa
+  `workspace-write` somente com o perfil de mutação e writes omitido ou não
+  vazio, sempre com `approval_policy=never` e sem a opção que desativa o
+  sandbox.
 
 O monitor antes/depois pelo Git continuará como salvaguarda de integridade em
 todos os harnesses: faz backup byte a byte de caminhos Git-visíveis ordinários,

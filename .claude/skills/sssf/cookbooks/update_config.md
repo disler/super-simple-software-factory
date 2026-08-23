@@ -29,7 +29,7 @@ Purely cosmetic and safe to change mid-project: the color rides the `agent_start
 
 ## Retune tools and harness
 
-Use portable capabilities in new rosters: `read`, `search`, `shell`, `write`, `edit`. The shared resolver accepts `bash → shell` and `grep`/`find`/`ls → search` for every harness. Codex accepts an alias only when its normalized result is the inspection profile (`read`, `search`, `shell`) or mutation profile (all five); Claude Code accepts portable subsets.
+Use portable capabilities in new rosters: `read`, `search`, `shell`, `write`, `edit`. The shared resolver accepts `bash → shell` and `grep`/`find`/`ls → search` for every harness. Codex accepts an alias only when its normalized result is the inspection profile (`read`, `search`, `shell`) with `writes: []`, or mutation profile (all five) with writes omitted or non-empty; Claude Code accepts portable subsets.
 
 Set the roster-wide floor in `defaults`, then narrow per agent:
 
@@ -46,7 +46,7 @@ agents:
       - write
 ```
 
-**Resolution:** the agent's own list wins → else it inherits `defaults.tools` → else `None`, meaning all tools. An empty list is not "all tools"; it is a tool-less agent, and it will stall.
+**Resolution:** the agent's own list wins → else it inherits `defaults.tools` → else `None`, meaning all tools. An empty list is not "all tools"; it is a tool-less agent, and it will stall. For Pi, that explicit empty list emits `--no-tools`; an omitted list leaves Pi's default and extension tools available.
 
 Narrow by role, not by reflex:
 

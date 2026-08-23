@@ -16,12 +16,13 @@ from pathlib import Path
 from typing import TypedDict
 
 from .harness_capabilities import resolve_capabilities
-from .harness_process import (ProcessOutcome, ProcessSpec, ensure_executable,
-                              require_effort, run_jsonl_process)
+from .harness_process import (ProcessSpec, ensure_executable, require_effort,
+                              run_jsonl_process)
 from .harness_types import (HarnessConfigError, HarnessEvent, HarnessName,
-                            HarnessProcessError, HarnessProfile, HarnessRequest,
-                            HarnessResult, ProcessCallback, UsageBreakdown,
+                            HarnessProfile, HarnessRequest, HarnessResult,
+                            ProcessCallback, UsageBreakdown,
                             validate_session_id)
+from .pi_protocol import PiTerminalState
 from .utils import new_id, now_iso, operator_env
 
 PI_PATH = os.environ.get("PI_PATH", "pi")
@@ -342,6 +343,7 @@ class PiEventParser:
         self._result = result
         self._on_event = on_event
         self._tools = ToolCallTracker()
+        self.terminal = PiTerminalState()
 
     def observe(self, event: dict[str, object]) -> None:
         """Record one Pi protocol event and forward completed tool calls.
@@ -349,6 +351,7 @@ class PiEventParser:
         Example: ``parser.observe({"type": "message_end"})`` records its turn.
         """
         self._observe_assistant_message(event)
+        self.terminal.observe(event)
         tool_event = self._tools.observe(event)
         if tool_event and self._on_event:
             self._on_event(tool_event)
@@ -358,16 +361,17 @@ class PiEventParser:
             return
         message = _object_map(event.get("message"))
         if message.get("role") == "assistant":
+            if not self.terminal.record_assistant(message):
+                return
             self._record_message(message)
 
     def _record_message(self, message: Mapping[str, object]) -> None:
         text = _text_of(message)
-        if text:
-            self._result.text = text
+        self._result.text = text
         usage = _object_map(message.get("usage"))
         turn = _context_tokens(usage)
         _add_usage(self._result, usage, turn)
-        if turn and message.get("stopReason") not in ("aborted", "error"):
+        if turn and self.terminal.final_stop_reason not in ("aborted", "error"):
             self._result.context_tokens = turn
 
 
@@ -413,7 +417,7 @@ class PiAdapter:
         outcome = run_jsonl_process(_process_spec(request, provider, model_id, session_id),
                                     parser.observe, on_spawn, on_exit)
         result.returncode = outcome.returncode
-        _require_usable_result(result, outcome)
+        parser.terminal.require_usable_result(result, outcome, PI_PATH)
         return result
 
 
@@ -443,22 +447,14 @@ def _pi_command(request: HarnessRequest, provider: str, model_id: str,
     command = [PI_PATH, "-p", "--mode", "json", "--provider", provider, "--model", model_id,
                "--thinking", request.profile.effort, "--session-id", session_id,
                "--session-dir", request.runtime_dir, "--system-prompt", request.system_prompt]
-    # Omitting --tools deliberately preserves Pi's built-ins and tools supplied
-    # by loaded extensions. ``tools: null`` is not an all-tools allowlist.
-    if request.profile.tools is not None and capabilities.native_tools:
+    if request.profile.tools == []:
+        command.append("--no-tools")
+    elif request.profile.tools is not None:
         command.extend(["--tools", ",".join(capabilities.native_tools)])
     for extension in request.profile.extensions:
         command.extend(["-e", extension])
     command.append(request.prompt)
     return command
-
-
-def _require_usable_result(result: HarnessResult, outcome: ProcessOutcome) -> None:
-    if result.returncode == 0:
-        return
-    stderr_tail = outcome.stderr_tail.strip()
-    value = f"{PI_PATH} exited {result.returncode}: {stderr_tail}"
-    raise HarnessProcessError("pi", value, "exit code 0 or a final assistant result")
 
 
 ADAPTER = PiAdapter()

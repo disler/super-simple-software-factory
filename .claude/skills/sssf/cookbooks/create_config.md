@@ -62,7 +62,7 @@ agents:
       user: adws/adw_data/prompt_engineering/reviewer/user.md
 ```
 
-Every agent entry merges over `defaults`, so an entry only states what differs. Model identifiers are owned by their selected CLI: Pi values are provider-qualified (`provider/model-id`), while Claude Code and Codex values are native IDs (`opus`, `gpt-5.6-terra`, `gpt-5.6-sol`). Use portable tool names (`read`, `search`, `shell`, `write`, `edit`) across harnesses. The shared resolver also accepts `bash`, `grep`, `find`, and `ls`; Codex accepts them only when their normalized result is its inspection profile (`read`, `search`, `shell`) or mutation profile (all five). Pi additionally supports extension tools.
+Every agent entry merges over `defaults`, so an entry only states what differs. Model identifiers are owned by their selected CLI: Pi values are provider-qualified (`provider/model-id`), while Claude Code and Codex values are native IDs (`opus`, `gpt-5.6-terra`, `gpt-5.6-sol`). Use portable tool names (`read`, `search`, `shell`, `write`, `edit`) across harnesses. The shared resolver also accepts `bash`, `grep`, `find`, and `ls`; Codex accepts them only when their normalized result is its inspection profile (`read`, `search`, `shell`) with `writes: []`, or its mutation profile (all five) with writes omitted or non-empty. Pi additionally supports extension tools.
 
 ## After generating
 

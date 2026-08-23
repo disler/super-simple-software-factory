@@ -21,7 +21,8 @@ defaults:
   # effort: xhigh
   # Roster-wide allowlist; any agent may override with its own list.
   # The shared resolver accepts legacy names: bash -> shell; grep/find/ls -> search.
-  # Codex still requires the normalized inspection or mutation capability set.
+  # Codex inspection tools [read, search, shell] require writes: []; mutation
+  # tools [read, search, shell, write, edit] require writes omitted or nonempty.
   # A Pi-specific harness_engineering extension must name its custom tools here too.
   tools:
     - read                         # read file contents
