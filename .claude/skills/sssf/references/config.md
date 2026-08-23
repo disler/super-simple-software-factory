@@ -92,13 +92,13 @@ The portable names are `read`, `search`, `shell`, `write`, and `edit`. The share
 | Claude Code | Any subset of the portable capabilities. |
 | Codex | Exactly one of two profiles: inspection `[read, search, shell]`, or mutation `[read, search, shell, write, edit]`. |
 
-`writes` is independent from `tools`: a `shell` capability is not a repository boundary. `writes` and `protected_files` are enforced by comparing the Git change set after the agent call; unauthorized changes introduced by the call are rolled back and the phase fails. Existing user changes are left alone.
+`writes` is independent from `tools`: a `shell` capability is not a repository boundary, and `writes` is orchestration policy rather than a standalone filesystem sandbox. The Git monitor compares exact states for tracked and non-ignored untracked ordinary paths after the call. It can restore denied paths, including pre-existing dirty or untracked content, and then fails the phase; allowed ordinary-path changes remain. Existing user changes are left alone unless the call changes them.
 
 ## Sandboxing and write protection
 
-Claude Code and Codex receive native sandbox controls. `writes: []` becomes a read-only native sandbox; otherwise they run with workspace-write access. Claude Code is configured to fail if its native sandbox is unavailable. Codex uses its native `read-only` or `workspace-write` sandbox mode.
+Claude Code and Codex receive native sandbox controls, which are the security boundary for those harnesses. `writes: []` becomes a read-only native sandbox; otherwise they run with workspace-write access. Claude Code is configured to fail if its native sandbox is unavailable. Codex uses its native `read-only` or `workspace-write` sandbox mode. Pi has no native filesystem sandbox, so run untrusted Pi workloads only inside external isolation.
 
-The Git change-set check runs on every completed or failed execute path, including process, protocol, parsing, and gate failures. It is after-the-fact protection of repository files, not a replacement for a native sandbox. The orchestrator owns prompts, raw streams, and envelopes under `data_dir`; a writable harness profile may also write `context_handoff/` files there. Native read-only Claude Code and Codex profiles cannot create repository-local handoff artifacts, so use their structured output or select a writable profile when direct artifact files are required.
+The Git monitor runs on every completed or failed execute path, including process, protocol, parsing, and gate failures. It requires a valid worktree/HEAD and detects HEAD, current-ref, index, and ref-map changes, but never auto-restores Git metadata: operators must inspect those changes. It is not protection against adversarial `.git`, ignored paths, special nodes, symlink/TOCTOU attacks, or deliberately detached processes. Worktree/disposable-checkout isolation is the deferred next milestone. The orchestrator owns prompts, raw streams, and envelopes under `data_dir`; only the frozen current-session runtime directory is exempt from the monitor. Native read-only Claude Code and Codex profiles cannot create repository-local handoff artifacts, so use their structured output or select a writable profile when direct artifact files are required.
 
 ## Pi extensions
 

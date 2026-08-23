@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -99,7 +100,7 @@ def _start_process(spec: ProcessSpec, temporary_stderr: Path) -> subprocess.Pope
         process = subprocess.Popen(
             spec.command, stdin=subprocess.PIPE if spec.stdin_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=stderr_file, text=True, bufsize=1,
-            cwd=spec.cwd, env=operator_env(),
+            cwd=spec.cwd, env=operator_env(), start_new_session=os.name == "posix",
         )
     except BaseException:
         stderr_file.close()
@@ -190,13 +191,41 @@ def _secure_diagnostic_path(path: Path) -> None:
 
 
 def _finish_process(process: subprocess.Popen[str]) -> None:
-    if process.poll() is None:
-        process.terminate()
+    _terminate_process_group(process)
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        process.kill()
+        _kill_process_group(process)
         process.wait()
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    """Signal the harness session even when its CLI leader has already exited.
+
+    Example: ``_terminate_process_group(process)`` stops normal same-group children.
+    """
+    if os.name != "posix":
+        if process.poll() is None:
+            process.terminate()
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    """Escalate termination for a still-running harness process group.
+
+    Example: ``_kill_process_group(process)`` after the graceful timeout.
+    """
+    if os.name != "posix":
+        process.kill()
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
 
 
 def _notify_exit(process: subprocess.Popen[str], callback: ProcessCallback | None) -> None:

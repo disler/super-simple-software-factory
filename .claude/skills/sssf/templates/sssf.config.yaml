@@ -34,10 +34,12 @@ defaults:
   # reaches any path. An agent must not be able to edit the machinery that
   # decides whether its own work passed. Enforced in adw_modules/permissions.py.
   #
-  # `writes:` per agent says what it may change IN THE REPO. The orchestrator
-  # writes the session runtime under data_dir — envelopes, prompts, raw output.
-  # Native read-only Claude Code/Codex agents cannot create context_handoff/
-  # artifacts there; use structured output or a writable profile for artifacts.
+  # `writes:` is orchestration policy, not a standalone filesystem sandbox.
+  # Claude Code/Codex rely on native sandboxing; Pi needs external isolation
+  # for untrusted workloads. The Git monitor best-effort rolls back denied
+  # ordinary Git-visible paths, but cannot secure .git, ignored paths, TOCTOU,
+  # special nodes, or detached processes. Only the current session runtime is
+  # exempt under data_dir; native read-only profiles use structured output.
   protected_files:
     - adws/adw_modules/
     - adws/adw_sssf_config/

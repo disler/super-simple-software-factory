@@ -1,8 +1,7 @@
-"""Recoverable working-tree and Git metadata snapshots for permission checks.
+"""Best-effort Git-visible worktree snapshots for permission monitoring.
 
-The snapshot intentionally excludes ``objects/`` and ``logs/``. A temporary
-commit can leave unreachable objects and reflog history, but restoring every
-ref, HEAD, index, and other metadata makes neither affect the checkout state.
+The snapshot never copies, restores, or writes Git metadata. Git state is
+fingerprinted only, because linked worktrees can share refs and configuration.
 """
 
 from __future__ import annotations
@@ -22,17 +21,28 @@ PathKind = Literal["file", "symlink", "missing", "directory"]
 
 
 class RepositoryStateError(RuntimeError):
-    """A repository cannot be snapshotted or restored safely.
+    """A repository cannot be monitored safely.
 
     Example: ``raise RepositoryStateError("git HEAD is not a commit")``.
     """
 
 
+class SnapshotCleanupError(RepositoryStateError):
+    """Snapshot cleanup retained sensitive backup material for an operator.
+
+    Example: ``raise SnapshotCleanupError(path)`` when removal fails.
+    """
+
+    def __init__(self, path: Path, error: OSError):
+        super().__init__(f"snapshot cleanup failed; remove retained backup {path!s}: {error}")
+        self.path = path
+
+
 @dataclass(frozen=True)
 class FileState:
-    """The exact content identity and recoverable backup of one filesystem node.
+    """The exact identity and recoverable backup of one ordinary node.
 
-    Example: ``FileState("missing")`` represents a path introduced after capture.
+    Example: ``FileState("missing")`` represents a node introduced after capture.
     """
 
     kind: PathKind
@@ -42,52 +52,57 @@ class FileState:
 
 
 @dataclass(frozen=True)
-class GitMetadataState:
-    """Recoverable metadata for one Git directory.
+class GitIntegrityState:
+    """Read-only fingerprint of Git state that must not change during a phase.
 
-    Example: ``state = capture_git_metadata(repo, backup_dir)``.
+    Example: ``state = capture_git_integrity(repo)`` before an adapter starts.
     """
 
-    root: Path
-    paths: dict[str, FileState]
+    head_commit: str
+    current_ref: str | None
+    index: FileState
+    refs: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class RepositorySnapshot:
-    """Pre-call state used to restore unauthorised repository mutations.
+    """Pre-call ordinary-file backups and immutable monitor scope.
 
-    Example: ``snapshot = capture_repository(Path("."))``.
+    Example: ``snapshot = capture_repository(root, session_dir)``.
     """
 
     repo_root: Path
     temp_dir: Path
     worktree_backup_dir: Path
     paths: dict[str, FileState]
-    metadata: tuple[GitMetadataState, ...]
+    git_integrity: GitIntegrityState
+    runtime_prefix: str
+    runtime_node: FileState
 
 
-def capture_repository(repo_root: Path) -> RepositorySnapshot:
-    """Capture all non-ignored paths and mutable Git state outside ``repo_root``.
+def capture_repository(repo_root: Path, session_dir: Path) -> RepositorySnapshot:
+    """Capture Git-visible ordinary files outside a frozen runtime prefix.
 
-    Example: ``snapshot = capture_repository(run.repo_root)`` before a backend spawn.
+    Example: ``snapshot = capture_repository(run.repo_root, run.session_dir)``.
     """
-    root, git_dirs = validate_repository(repo_root)
+    root = validate_repository(repo_root)
+    runtime_prefix, runtime_node = capture_runtime_prefix(repo_root, session_dir)
     temp_dir = Path(tempfile.mkdtemp(prefix="sssf-repository-snapshot-"))
     try:
-        worktree_backup_dir = temp_dir / "worktree"
-        paths = capture_worktree_paths(root, worktree_backup_dir)
-        metadata = tuple(capture_git_metadata(directory, temp_dir / f"git-{index}")
-                         for index, directory in enumerate(git_dirs))
-        return RepositorySnapshot(root, temp_dir, worktree_backup_dir, paths, metadata)
-    except BaseException:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        backup_dir = temp_dir / "worktree"
+        paths = capture_worktree_paths(root, backup_dir)
+        integrity = capture_git_integrity(root)
+        return RepositorySnapshot(root, temp_dir, backup_dir, paths, integrity,
+                                  runtime_prefix, runtime_node)
+    except BaseException as error:
+        _cleanup_failed_capture(temp_dir, error)
         raise
 
 
-def validate_repository(repo_root: Path) -> tuple[Path, tuple[Path, ...]]:
-    """Require ``repo_root`` to be a worktree root with a resolvable HEAD commit.
+def validate_repository(repo_root: Path) -> Path:
+    """Require ``repo_root`` to be a worktree root with a resolvable HEAD.
 
-    Example: ``root, git_dirs = validate_repository(run.repo_root)``.
+    Example: ``root = validate_repository(run.repo_root)``.
     """
     root = repo_root.resolve()
     actual = Path(_git(root, ["rev-parse", "--show-toplevel"]).decode().strip()).resolve()
@@ -95,98 +110,118 @@ def validate_repository(repo_root: Path) -> tuple[Path, tuple[Path, ...]]:
     _git(root, ["rev-parse", "--verify", "HEAD^{commit}"])
     if root != actual or inside != "true":
         raise RepositoryStateError(f"repository root {root!s} expected usable worktree root {actual!s}")
-    git_dir = _git_path(root, "--git-dir")
-    common_dir = _git_path(root, "--git-common-dir")
-    return root, tuple(dict.fromkeys((git_dir, common_dir)))
+    return root
+
+
+def capture_runtime_prefix(repo_root: Path, session_dir: Path) -> tuple[str, FileState]:
+    """Freeze one lexical runtime directory after rejecting symlink components.
+
+    Example: ``prefix, node = capture_runtime_prefix(root, run.session_dir)``.
+    """
+    lexical_root = _lexical_absolute(repo_root)
+    target = _runtime_lexical_path(lexical_root, session_dir)
+    try:
+        relative = target.relative_to(lexical_root)
+    except ValueError as error:
+        raise RepositoryStateError(f"runtime directory {target!s} expected below {lexical_root!s}") from error
+    if not relative.parts:
+        raise RepositoryStateError(f"runtime directory {target!s} must not be the repository root")
+    _reject_symlink_components(lexical_root, relative)
+    node = _node_state(target, directories=True)
+    if node.kind != "directory":
+        raise RepositoryStateError(f"runtime directory {target!s} expected an existing directory")
+    return relative.as_posix(), node
 
 
 def capture_worktree_paths(repo_root: Path, backup_dir: Path) -> dict[str, FileState]:
-    """Capture every tracked or non-ignored untracked path by byte content.
+    """Back up tracked and non-ignored untracked paths by bytes and node mode.
 
     Example: ``paths = capture_worktree_paths(repo, backup_dir)``.
     """
     names = _git(repo_root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
-    paths = _decode_git_paths(names)
-    return _capture_paths(repo_root, paths, backup_dir)
+    return _capture_paths(repo_root, _decode_git_paths(names), backup_dir)
 
 
-def capture_git_metadata(git_dir: Path, backup_dir: Path) -> GitMetadataState:
-    """Capture mutable Git metadata while excluding non-state object and log stores.
+def capture_git_integrity(repo_root: Path) -> GitIntegrityState:
+    """Fingerprint HEAD, current ref, current index, and ref map without copying them.
 
-    Example: ``metadata = capture_git_metadata(git_dir, backup_dir)``.
+    Example: ``state = capture_git_integrity(repo)`` after a command exits.
     """
-    if not git_dir.is_dir():
-        raise RepositoryStateError(f"Git directory {git_dir!s} expected an existing directory")
-    names = _metadata_paths(git_dir)
-    return GitMetadataState(git_dir, _capture_paths(git_dir, names, backup_dir, directories=True))
+    head_commit = _git(repo_root, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+    current_ref = _symbolic_ref(repo_root)
+    index_path = _git_path(repo_root, "--git-path", "index")
+    refs = tuple(_git(repo_root, ["for-each-ref", "--format=%(refname)%09%(objectname)"])
+                 .decode(errors="surrogateescape").splitlines())
+    return GitIntegrityState(head_commit, current_ref, _node_state(index_path), refs)
 
 
 def worktree_changes(snapshot: RepositorySnapshot) -> tuple[dict[str, FileState], list[str]]:
-    """Return current states and paths whose exact state changed since capture.
+    """Return current Git-visible path states and exact changes from capture.
 
-    Example: ``after, touched = worktree_changes(snapshot)`` after a backend exits.
+    Example: ``after, touched = worktree_changes(snapshot)`` after a process exits.
     """
     after = capture_worktree_paths(snapshot.repo_root, snapshot.temp_dir / "after-worktree")
-    touched = sorted(set(snapshot.paths) | set(after))
-    return after, [path for path in touched if snapshot.paths.get(path) != after.get(path)]
+    names = sorted(set(snapshot.paths) | set(after))
+    return after, [name for name in names if snapshot.paths.get(name) != after.get(name)]
 
 
-def metadata_changed(snapshot: RepositorySnapshot) -> bool:
-    """Report whether any mutable Git metadata differs from its initial state.
+def git_integrity_changes(snapshot: RepositorySnapshot) -> list[str]:
+    """Return changed Git-state labels without attempting automatic recovery.
 
-    Example: ``if metadata_changed(snapshot): restore_git_metadata(snapshot)``.
+    Example: ``changes = git_integrity_changes(snapshot)`` reports a moved ref.
     """
-    for index, expected in enumerate(snapshot.metadata):
-        current = capture_git_metadata(expected.root, snapshot.temp_dir / f"after-git-{index}")
-        if current.paths != expected.paths:
-            return True
-    return False
+    after = capture_git_integrity(snapshot.repo_root)
+    before = snapshot.git_integrity
+    labels: list[str] = []
+    if before.head_commit != after.head_commit:
+        labels.append("HEAD")
+    if before.current_ref != after.current_ref:
+        labels.append("current ref")
+    if before.index != after.index:
+        labels.append("index")
+    if before.refs != after.refs:
+        labels.append("ref map")
+    return labels
+
+
+def runtime_node_changed(snapshot: RepositorySnapshot) -> bool:
+    """Report replacement or mode changes to the frozen runtime-directory node.
+
+    Example: ``if runtime_node_changed(snapshot): raise PermissionBreach(...)``.
+    """
+    node = _path_at(snapshot.repo_root, snapshot.runtime_prefix)
+    return _node_state(node, directories=True) != snapshot.runtime_node
 
 
 def restore_worktree_path(snapshot: RepositorySnapshot, path: str) -> None:
-    """Restore one path to its exact pre-call content, mode, and link state.
+    """Restore an ordinary worktree path or remove one introduced after capture.
 
     Example: ``restore_worktree_path(snapshot, "src/app.py")``.
     """
-    expected = snapshot.paths.get(path, FileState("missing"))
-    _restore_path(snapshot.repo_root, path, expected, snapshot.worktree_backup_dir)
-
-
-def preserve_worktree_path(snapshot: RepositorySnapshot, path: str,
-                           state: FileState) -> FileState:
-    """Copy a permitted post-call path so metadata recovery cannot discard it.
-
-    Example: ``saved = preserve_worktree_path(snapshot, path, after[path])``.
-    """
-    return _capture_path(snapshot.repo_root, path, snapshot.temp_dir / "permitted", state.backup_name)
-
-
-def restore_preserved_path(snapshot: RepositorySnapshot, path: str,
-                           state: FileState) -> None:
-    """Reapply a permitted post-call path after Git metadata has been restored.
-
-    Example: ``restore_preserved_path(snapshot, path, saved)``.
-    """
-    _restore_path(snapshot.repo_root, path, state, snapshot.temp_dir / "permitted")
-
-
-def restore_git_metadata(snapshot: RepositorySnapshot) -> None:
-    """Restore all captured Git metadata without checkout or reset commands.
-
-    Example: ``restore_git_metadata(snapshot)`` after a detected ref/index mutation.
-    """
-    for index, expected in enumerate(snapshot.metadata):
-        _restore_metadata_tree(expected, snapshot.temp_dir / f"git-{index}")
-    if metadata_changed(snapshot):
-        raise RepositoryStateError("Git metadata restoration did not reproduce the captured state")
+    _restore_path(snapshot.repo_root, path, snapshot.paths.get(path, FileState("missing")),
+                  snapshot.worktree_backup_dir)
 
 
 def cleanup_snapshot(snapshot: RepositorySnapshot) -> None:
-    """Remove temporary snapshot contents after enforcement completes.
+    """Remove the private backup directory or report its retained location.
 
-    Example: ``cleanup_snapshot(snapshot)`` in an enforcement ``finally`` block.
+    Example: ``cleanup_snapshot(snapshot)`` after enforcement.
     """
-    shutil.rmtree(snapshot.temp_dir, ignore_errors=True)
+    _remove_temp_dir(snapshot.temp_dir)
+
+
+def _cleanup_failed_capture(temp_dir: Path, original: BaseException) -> None:
+    try:
+        _remove_temp_dir(temp_dir)
+    except SnapshotCleanupError as cleanup:
+        raise cleanup from original
+
+
+def _remove_temp_dir(path: Path) -> None:
+    try:
+        shutil.rmtree(path)
+    except OSError as error:
+        raise SnapshotCleanupError(path, error) from error
 
 
 def _git(repo_root: Path, args: list[str]) -> bytes:
@@ -200,75 +235,105 @@ def _git(repo_root: Path, args: list[str]) -> bytes:
     raise RepositoryStateError(f"git {' '.join(args)!r} failed in {repo_root!s}: {stderr}")
 
 
-def _git_path(repo_root: Path, option: str) -> Path:
-    output = _git(repo_root, ["rev-parse", option]).decode(errors="surrogateescape").strip()
+def _symbolic_ref(repo_root: Path) -> str | None:
+    result = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"], cwd=repo_root,
+                            capture_output=True)
+    if result.returncode == 0:
+        return result.stdout.decode(errors="surrogateescape").strip()
+    if result.returncode == 1:
+        return None
+    stderr = result.stderr.decode(errors="replace").strip()
+    raise RepositoryStateError(f"git 'symbolic-ref --quiet HEAD' failed in {repo_root!s}: {stderr}")
+
+
+def _git_path(repo_root: Path, *args: str) -> Path:
+    output = _git(repo_root, ["rev-parse", *args]).decode(errors="surrogateescape").strip()
     path = Path(output)
-    return path if path.is_absolute() else (repo_root / path).resolve()
+    return path if path.is_absolute() else repo_root / path
+
+
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _runtime_lexical_path(root: Path, session_dir: Path) -> Path:
+    """Anchor relative runtime paths to the captured repository root.
+
+    Example: ``_runtime_lexical_path(root, Path("adws/session"))``.
+    """
+    if session_dir.is_absolute():
+        return _lexical_absolute(session_dir)
+    return root.joinpath(session_dir)
+
+
+def _reject_symlink_components(root: Path, relative: Path) -> None:
+    current = root
+    for part in relative.parts:
+        current = current / part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError as error:
+            raise RepositoryStateError(f"runtime component {current!s} expected to exist") from error
+        if stat.S_ISLNK(mode):
+            raise RepositoryStateError(f"runtime component {current!s} must not be a symlink")
 
 
 def _decode_git_paths(output: bytes) -> list[str]:
-    names = [name.decode(errors="surrogateescape") for name in output.split(b"\0") if name]
+    names = [item.decode(errors="surrogateescape") for item in output.split(b"\0") if item]
     for name in names:
         _relative_parts(name)
     return names
 
 
-def _metadata_paths(git_dir: Path) -> list[str]:
-    paths: list[str] = []
-    for current, directories, files in os.walk(git_dir, followlinks=False):
-        relative = Path(current).relative_to(git_dir).as_posix()
-        _exclude_metadata_directories(relative, directories)
-        paths.extend(_relative_name(relative, name) for name in directories + files)
-    return sorted(paths)
-
-
-def _exclude_metadata_directories(relative: str, directories: list[str]) -> None:
-    if relative not in (".", ""):
-        return
-    directories[:] = [name for name in directories if name not in {"objects", "logs"}]
-
-
-def _relative_name(parent: str, name: str) -> str:
-    """Build one portable relative path from an os.walk parent and entry name."""
-    relative = name if parent in (".", "") else f"{parent}/{name}"
-    return relative
-
-
-def _capture_paths(root: Path, paths: list[str], backup_dir: Path,
-                   directories: bool = False) -> dict[str, FileState]:
+def _capture_paths(root: Path, paths: list[str], backup_dir: Path) -> dict[str, FileState]:
     states: dict[str, FileState] = {}
     for index, path in enumerate(paths):
-        states[path] = _capture_path(root, path, backup_dir, f"{index:08d}", directories)
+        states[path] = _capture_path(root, path, backup_dir, f"{index:08d}")
     return states
 
 
-def _capture_path(root: Path, relative: str, backup_dir: Path, backup_name: str,
-                  directories: bool = False) -> FileState:
+def _capture_path(root: Path, relative: str, backup_dir: Path, backup_name: str) -> FileState:
     target = _path_at(root, relative)
-    try:
-        node = target.lstat()
-    except FileNotFoundError:
-        return FileState("missing")
-    if directories and stat.S_ISDIR(node.st_mode):
-        return FileState("directory", stat.S_IMODE(node.st_mode))
-    content, kind = _node_content(target, node.st_mode)
+    state = _node_state(target)
+    if state.kind == "missing":
+        return state
+    content = _node_content(target, state.kind)
     backup_dir.mkdir(parents=True, exist_ok=True)
     (backup_dir / backup_name).write_bytes(content)
-    return FileState(kind, stat.S_IMODE(node.st_mode), _digest(content), backup_name)
+    return FileState(state.kind, state.mode, state.digest, backup_name)
 
 
-def _node_content(path: Path, mode: int) -> tuple[bytes, PathKind]:
+def _node_state(path: Path, directories: bool = False) -> FileState:
+    try:
+        node = path.lstat()
+    except FileNotFoundError:
+        return FileState("missing")
+    mode = stat.S_IMODE(node.st_mode)
+    if directories and stat.S_ISDIR(node.st_mode):
+        return FileState("directory", mode)
+    kind = _node_kind(path, node.st_mode)
+    content = _node_content(path, kind)
+    return FileState(kind, mode, _digest(content))
+
+
+def _node_kind(path: Path, mode: int) -> PathKind:
     if stat.S_ISREG(mode):
-        return path.read_bytes(), "file"
+        return "file"
     if stat.S_ISLNK(mode):
-        return os.fsencode(os.readlink(path)), "symlink"
+        return "symlink"
     raise RepositoryStateError(f"path {path!s} expected regular file or symlink, found mode {mode:o}")
 
 
+def _node_content(path: Path, kind: PathKind) -> bytes:
+    if kind == "file":
+        return path.read_bytes()
+    if kind == "symlink":
+        return os.fsencode(os.readlink(path))
+    raise RepositoryStateError(f"path {path!s} expected a readable file or symlink, found {kind}")
+
+
 def _digest(content: bytes) -> str:
-    """Return the stable content digest used for exact snapshot comparison."""
-    digest = hashlib.sha256(content).hexdigest()
-    return digest
+    return hashlib.sha256(content).hexdigest()
 
 
 def _relative_parts(relative: str) -> tuple[str, ...]:
@@ -279,39 +344,7 @@ def _relative_parts(relative: str) -> tuple[str, ...]:
 
 
 def _path_at(root: Path, relative: str) -> Path:
-    """Resolve a previously validated repository-relative path below ``root``."""
-    path = root.joinpath(*_relative_parts(relative))
-    return path
-
-
-def _restore_metadata_tree(expected: GitMetadataState, backup_dir: Path) -> None:
-    current_names = set(_metadata_paths(expected.root))
-    expected_names = set(expected.paths)
-    _remove_extra_metadata(expected.root, current_names - expected_names)
-    _restore_metadata_nodes(expected.root, expected.paths, backup_dir)
-
-
-def _remove_extra_metadata(root: Path, paths: set[str]) -> None:
-    """Remove metadata nodes introduced after capture from deepest to shallowest."""
-    for relative in sorted(paths, key=lambda value: value.count("/"), reverse=True):
-        _remove_node(_path_at(root, relative))
-
-
-def _restore_metadata_nodes(root: Path, states: dict[str, FileState], backup_dir: Path) -> None:
-    directories = sorted((path for path, state in states.items() if state.kind == "directory"),
-                         key=lambda value: value.count("/"))
-    for relative in directories:
-        _restore_directory(_path_at(root, relative), states[relative].mode)
-    for relative, state in states.items():
-        if state.kind != "directory":
-            _restore_path(root, relative, state, backup_dir)
-
-
-def _restore_directory(target: Path, mode: int) -> None:
-    if target.is_symlink() or (target.exists() and not target.is_dir()):
-        _remove_node(target)
-    target.mkdir(parents=True, exist_ok=True)
-    os.chmod(target, mode)
+    return root.joinpath(*_relative_parts(relative))
 
 
 def _restore_path(root: Path, relative: str, state: FileState, backup_dir: Path) -> None:
@@ -320,9 +353,6 @@ def _restore_path(root: Path, relative: str, state: FileState, backup_dir: Path)
         _remove_node(target)
         return
     _ensure_parent(target.parent)
-    if state.kind == "directory":
-        _restore_directory(target, state.mode)
-        return
     content = _backup_content(backup_dir, state, relative)
     _remove_node(target)
     _write_node(target, state, content)
@@ -348,7 +378,10 @@ def _write_node(target: Path, state: FileState, content: bytes) -> None:
         target.write_bytes(content)
         os.chmod(target, state.mode)
         return
-    os.symlink(os.fsdecode(content), target)
+    if state.kind == "symlink":
+        os.symlink(os.fsdecode(content), target)
+        return
+    raise RepositoryStateError(f"path {target!s} expected restorable file or symlink, found {state.kind}")
 
 
 def _remove_node(target: Path) -> None:

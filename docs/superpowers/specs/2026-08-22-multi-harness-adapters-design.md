@@ -172,7 +172,8 @@ extensão que os registra.
 
 ## Permissões e sandbox
 
-`writes` continuará sendo a autoridade sobre mutações no repositório:
+`writes` continuará sendo uma política de orquestração para mutações no repositório,
+não um sandbox de filesystem independente:
 
 - `writes: []`: agente read-only em relação ao repositório;
 - lista de caminhos: somente esses caminhos podem permanecer alterados;
@@ -181,16 +182,21 @@ extensão que os registra.
 
 Os adapters inferirão as permissões:
 
-- Pi usa a allowlist existente e proteção por diff;
+- Pi usa a allowlist existente, mas não possui sandbox nativo: workloads não
+  confiáveis exigem isolamento externo;
 - Claude Code usa tools restritas, modo não interativo, sandbox nativo e falha
   se o sandbox exigido não estiver disponível;
 - Codex usa `read-only` ou `workspace-write` com `approval_policy=never`, sem a
   opção que desativa o sandbox.
 
-A captura antes/depois pelo Git continuará sendo a segunda barreira em todos os
-harnesses. Mudanças fora de `writes` serão revertidas quando recuperáveis, e a
-fase falhará. O primeiro marco ainda trabalha no checkout atual; worktree não é
-uma garantia implícita deste design.
+O monitor antes/depois pelo Git continuará como salvaguarda de integridade em
+todos os harnesses: faz backup byte a byte de caminhos Git-visíveis ordinários,
+restaura mudanças negadas quando possível e falha a fase. Ele não é sandbox nem
+protege contra `.git`, caminhos ignorados, nós especiais, symlink/TOCTOU ou
+processos deliberadamente destacados. Mudança em HEAD/ref/index será reportada,
+sem restauração automática, para inspeção do operador. O primeiro marco ainda
+trabalha no checkout atual; isolamento por worktree/checkout descartável é o
+próximo marco explicitamente adiado.
 
 ## Fluxo de execução
 

@@ -174,7 +174,7 @@ Five starter agents ship in the box: `planner`, `builder`, `scout` (read-only re
 
 Every agent gets its own model, effort, prompts, tools, and harness. That is the core surface you tune. Use portable capabilities (`read`, `search`, `shell`, `write`, `edit`) for rosters that span harnesses. The shared resolver also accepts `bash`, `grep`, `find`, and `ls`; Codex accepts an alias only when its normalized result is the inspection profile (`read`, `search`, `shell`) or the mutation profile (all five). Pi additionally supports extensions.
 
-**`tools` is a capability list. `writes` is the boundary.** They are not the same thing. Claude Code and Codex receive native read-only or workspace-write sandbox settings from `writes`; all harnesses also receive after-the-fact Git change-set protection on every completed or failed execute path. Unauthorized repository changes are rolled back and the phase fails. The orchestrator writes prompts, streams, and envelopes. A native read-only Claude Code or Codex agent cannot create `context_handoff/` files inside the repo; use its structured output or choose a writable profile when the phase requires direct artifacts.
+**`tools` is a capability list; `writes` is orchestration policy, not a filesystem sandbox.** Claude Code and Codex use native read-only or workspace-write sandbox settings as the security boundary. Pi has no native sandbox, so untrusted Pi workloads need external isolation. Every harness also receives a best-effort Git integrity monitor: it byte-backs up and can roll back denied ordinary Git-visible worktree paths, then fails the phase. It does not protect adversarial Git metadata, ignored paths, special nodes, symlink/TOCTOU attacks, or deliberately detached processes. The orchestrator writes prompts, streams, and envelopes. A native read-only Claude Code or Codex agent cannot create `context_handoff/` files inside the repo; use its structured output or choose a writable profile when the phase requires direct artifacts.
 
 Config defines who an agent **is**. The ADW call site defines how it is **used**. That split is what lets one agent serve many different calls. **ADW scripts never name a model, they name an agent.**
 
@@ -357,12 +357,12 @@ Honest edges, because knowing them is cheaper than discovering them.
 | A coding agent hangs silently | No events, no tokens, an empty `raw_output.jsonl`. The trace goes quiet rather than red | Query `processes` for what is alive and kill it children-first. A killed run finalizes its own trace to `fail` |
 | The synced triad drifts | Type, `## Report` example, and `output_type=` disagree, so every call burns correction rounds | Grep the type name and fix all three in one edit |
 | Gates pass, output is bad | Gates check what a predicate can check, not plan quality or code taste | Run the `reviewer`, or read it yourself |
-| An agent edits something it should not | Detected and rolled back after the call, and the phase fails | Expected. Widen that agent's `writes` if the change was legitimate |
+| An agent edits a denied ordinary Git-visible path | Best-effort detection restores the captured path and fails the phase | Widen that agent's `writes` if the change was legitimate; inspect Git metadata manually if reported |
 | Commit phase has nothing to commit | `commit_all` raises if the cwd is not a git repo or nothing changed | `git init` with one commit first. A no-op build fails the phase rather than committing nothing |
 | `install.py --force` | Overwrites **all** stamped files, config and prompts included | Commit before you force |
 | `coding_agent: pi`, `claude_code`, or `codex` | The matching installed CLI runs through its adapter | Select the harness per agent in the roster |
 
-Runs remain on the current checkout. Automatic worktree creation, branch-per-run isolation, and integration or merge workflows are later milestones; native sandboxing and Git write protection are available now.
+Runs remain on the current checkout. Automatic worktree/disposable-checkout isolation, branch-per-run isolation, and integration or merge workflows are later milestones. Native Claude Code/Codex sandboxing is available now; the Git monitor is an integrity safeguard, not an adversarial sandbox.
 
 **Is this overkill for a one-off feature?** Yes. Prompt an agent and move on. This earns its keep when the same workflow runs a hundred times, when validation is the only thing standing between you and a bad merge, and when you need the thousandth run to look like the first.
 
@@ -385,7 +385,7 @@ Where to start, roughly in the order that pays off fastest:
 | Your definition of done | `adws/adw_modules/gates.py` | A gate is one function. Whatever "done" means where you work, write it here |
 | Your agent capabilities | `adws/adw_data/harness_engineering/` | Pi extensions, a different set per agent if that is what the job needs |
 
-And what it deliberately does not do. It runs on your current checkout; automatic worktrees, branch-per-run isolation, and integration or merge steps are still later milestones. There is no cloud or human-in-the-loop approval phase. Native sandboxing for Claude Code and Codex plus Git write protection for every harness are already part of the execution boundary.
+And what it deliberately does not do. It runs on your current checkout; worktree/disposable-checkout isolation, branch-per-run isolation, and integration or merge steps are still later milestones. There is no cloud or human-in-the-loop approval phase. Native sandboxing is the execution boundary for Claude Code and Codex; Pi requires external isolation for untrusted work, while Git monitoring is best-effort ordinary-file integrity and rollback.
 
 So take it. Fork it, strip the parts you do not need, rename the agents, throw out half the workflows, and roll what is left into the factory your product actually needs. The specific chains in here matter far less than the shape: code owns the loop, agents own the phases, and every run leaves a trace you can go read.
 

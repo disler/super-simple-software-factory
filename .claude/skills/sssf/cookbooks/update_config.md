@@ -51,7 +51,7 @@ agents:
 Narrow by role, not by reflex:
 
 - Any agent that must directly produce a `context_handoff/` artifact needs a **writable harness profile** and `write`. Native read-only Claude Code and Codex profiles cannot write the repository-local runtime; their structured response still works, but it cannot stand in for a phase whose gate requires a file.
-- Withhold `edit`/`write` only where the restriction *is* the guarantee. The reviewer's contract is "change nothing", so withholding `edit` makes that structural instead of merely prompted.
+- Withhold `edit`/`write` to express intent and reduce accidental mutation, but do not mistake that for a filesystem boundary when `shell` remains available. Native Claude Code/Codex sandboxes enforce their selected access mode; Pi requires external isolation for untrusted workloads. The Git monitor is only best-effort rollback for ordinary Git-visible paths.
 - Recon agents should get the full read surface (`read`, `grep`, `find`, `ls`) — cheaper and more legible in the trace than the equivalent `bash` calls.
 
 **Extension tools count against the allowlist.** This applies to Pi only: `harness_engineering` is Pi-specific, and Pi filters extension tools unless their names appear in `tools`. Claude Code and Codex reject extension files rather than silently ignoring them.

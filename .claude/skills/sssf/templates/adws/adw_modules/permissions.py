@@ -1,32 +1,8 @@
-"""What an agent may CHANGE, enforced in code after the fact.
+"""Best-effort ordinary-file rollback for agent orchestration policy.
 
-`tools:` is a capability list, not a sandbox, and two holes make it
-unenforceable on its own:
-
-  * `bash` runs anything. A builder handed bash to run a test suite can also
-    run `git checkout adws/` — which is not hypothetical: one did, discarding
-    uncommitted changes to the very quality check it was about to be judged by.
-  * `write` reaches any path, not just the one report file an agent was given
-    it for. A reviewer configured with "no edit, so it cannot quietly fix"
-    could still rewrite the code it was reviewing.
-
-So permission is verified the way every other claim in this system is —
-after the fact, against the repo itself. `snapshot()` saves exact working-tree
-content and Git metadata before an agent runs; `enforce()` compares and restores
-it afterwards, failing the phase if the agent touched anything outside its allowlist.
-
-Comparing captured states, rather than watching for writes, is what catches the
-`git checkout` case: a path that was modified before the agent ran and is clean
-afterwards has been reverted, and a reversion is a modification. Appearing,
-disappearing, and changing all count.
-
-A breach is NOT a gate violation. Gates are for work an agent can be asked to
-redo; a breach cannot be corrected by re-prompting, because the write already
-happened. It aborts the phase and names every offending path.
-
-Two keys drive it, both in sssf.config.yaml:
-    defaults.protected_files   paths no agent may touch unless it names them itself
-    agents[].writes      None = unrestricted · [] = read-only · [...] = only these
+``writes`` is not a filesystem sandbox. Claude Code and Codex rely on their
+native sandbox; Pi needs external isolation for untrusted workloads. This
+module detects and restores Git-visible ordinary worktree paths only.
 """
 
 from __future__ import annotations
@@ -36,22 +12,21 @@ from pathlib import Path
 from typing import Protocol
 
 from .data_types import AgentConfig, Phase, SSSFConfig
-from .repository_snapshot import (FileState, RepositorySnapshot,
-                                  RepositoryStateError, capture_repository,
-                                  cleanup_snapshot, metadata_changed,
-                                  preserve_worktree_path, restore_git_metadata,
-                                  restore_preserved_path, restore_worktree_path,
+from .repository_snapshot import (RepositorySnapshot, RepositoryStateError,
+                                  SnapshotCleanupError, capture_repository,
+                                  cleanup_snapshot, git_integrity_changes,
+                                  restore_worktree_path, runtime_node_changed,
                                   worktree_changes)
 
 
 class PermissionBreach(RuntimeError):
-    """An agent modified a path it was not permitted to modify."""
+    """An agent modified protected state or Git metadata during its phase."""
 
 
 class PermissionRun(Protocol):
-    """Run state required by permission enforcement.
+    """Run state required by permission monitoring.
 
-    Example: ``snapshot(run)`` validates and captures this run's checkout.
+    Example: ``snapshot(run)`` freezes this run's repository and runtime scope.
     """
 
     cfg: SSSFConfig
@@ -60,26 +35,23 @@ class PermissionRun(Protocol):
 
 
 def snapshot(run: PermissionRun) -> RepositorySnapshot:
-    """Capture the recoverable repository state required before a backend spawn.
+    """Fail closed unless a valid Git worktree and HEAD can be captured.
 
-    This fails closed: ``run.repo_root`` must be the actual root of a usable
-    Git worktree with a valid HEAD commit. Git failures are never empty state.
-
-    Example: ``before = snapshot(run)`` before ``adapter.run(...)``.
+    Example: ``before = snapshot(run)`` before a backend spawn.
     """
-    return capture_repository(run.repo_root)
+    return capture_repository(run.repo_root, run.session_dir)
 
 
 def _glob(pattern: str) -> re.Pattern:
-    """Translate a pattern, with `*` stopping at a path separator.
+    """Translate a path glob where only ``**`` crosses a separator.
 
-    fnmatch would let `*` cross `/`, quietly widening patterns. `**` is the
-    explicit way to cross directories.
+    Example: ``_glob("docs/**/*.md").fullmatch("docs/a/readme.md")``.
     """
-    out, i = [], 0
-    while i < len(pattern):
-        char = pattern[i]
-        if pattern.startswith("**", i):
+    pieces: list[str] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if pattern.startswith("**", index):
             piece, width = ".*", 2
         elif char == "*":
             piece, width = "[^/]*", 1
@@ -87,138 +59,133 @@ def _glob(pattern: str) -> re.Pattern:
             piece, width = "[^/]", 1
         else:
             piece, width = re.escape(char), 1
-        out.append(piece)
-        i += width
-    return re.compile("".join(out))
+        pieces.append(piece)
+        index += width
+    return re.compile("".join(pieces))
 
 
 def _matches(path: str, pattern: str) -> bool:
-    if pattern.endswith("/"):                      # directory prefix
+    if pattern.endswith("/"):
         return path.startswith(pattern)
     if "*" in pattern or "?" in pattern:
         return _glob(pattern).fullmatch(path) is not None
     return path == pattern
 
 
-def orchestrator_runtime_paths(run: PermissionRun) -> list[str]:
-    """Return runtime paths exempt from post-call Git change checks.
+def permitted(path: str, agent: AgentConfig, run: PermissionRun,
+              snapshot_state: RepositorySnapshot) -> bool:
+    """Apply frozen runtime, explicit writes, and protected-file policy.
 
-    The orchestrator creates prompts, streams, and envelopes here. Writable
-    harness profiles may also create handoff files. Native read-only profiles
-    cannot write this repository-local directory, so their structured result is
-    the available handoff channel.
+    Example: ``permitted("docs/guide.md", agent, run, before)``.
     """
-    try:
-        relative = run.session_dir.resolve().relative_to(run.repo_root.resolve())
-    except ValueError:
-        return []
-    return [relative.as_posix().rstrip("/") + "/"]
-
-
-def permitted(path: str, agent: AgentConfig, run: PermissionRun) -> bool:
-    """Session runtime first, then the agent's own list, then what is protected."""
-    if any(_matches(path, p) for p in orchestrator_runtime_paths(run)):
+    if path.startswith(snapshot_state.runtime_prefix + "/"):
         return True
-    if any(_matches(path, p) for p in (agent.writes or [])):
-        return True                      # naming a path is what unlocks a protected one
-    if any(_matches(path, p) for p in run.cfg.defaults.protected_files):
+    if any(_matches(path, pattern) for pattern in agent.writes or []):
+        return True
+    if any(_matches(path, pattern) for pattern in run.cfg.defaults.protected_files):
         return False
-    return agent.writes is None          # None = unrestricted, [] = no repo writes
+    return agent.writes is None
 
 
-def _preserve_permitted(snapshot: RepositorySnapshot, paths: list[str],
-                        after: dict[str, FileState], agent: AgentConfig,
-                        run: PermissionRun) -> dict[str, FileState]:
-    """Save permitted post-call files before metadata recovery changes the checkout."""
-    saved: dict[str, FileState] = {}
+def _restore_unauthorized(snapshot_state: RepositorySnapshot, paths: list[str]) -> None:
+    """Restore only denied ordinary paths from their private byte backups.
+
+    Example: ``_restore_unauthorized(before, ["src/app.py"])``.
+    """
     for path in paths:
-        if permitted(path, agent, run):
-            saved[path] = preserve_worktree_path(snapshot, path, after.get(path, FileState("missing")))
-    return saved
-
-def _restore_unauthorized(snapshot: RepositorySnapshot, breaches: list[str]) -> None:
-    """Restore every denied worktree path from its recoverable pre-call copy."""
-    for path in breaches:
-        restore_worktree_path(snapshot, path)
+        restore_worktree_path(snapshot_state, path)
 
 
-def _verify_recovery(snapshot: RepositorySnapshot, expected: dict[str, FileState]) -> None:
-    """Fail closed when exact path or metadata recovery does not reproduce state."""
-    after, _ = worktree_changes(snapshot)
-    failures = [path for path, state in expected.items() if after.get(path, FileState("missing")) != state]
-    if failures or metadata_changed(snapshot):
-        detail = ", ".join(failures) or "Git metadata"
-        raise RepositoryStateError(f"repository recovery did not restore exact state: {detail}")
+def _verify_restored(snapshot_state: RepositorySnapshot, paths: list[str]) -> None:
+    """Require restored paths to return exactly to their captured file states.
+
+    Example: ``_verify_restored(before, breaches)`` after ordinary rollback.
+    """
+    after, _ = worktree_changes(snapshot_state)
+    failures = [path for path in paths
+                if after.get(path) != snapshot_state.paths.get(path)]
+    if failures:
+        raise RepositoryStateError(f"ordinary path recovery failed for: {', '.join(failures)}")
 
 
-def _breach_message(agent: AgentConfig, run: PermissionRun, breaches: list[str],
-                    metadata_was_changed: bool) -> str:
-    """Format a complete permission error after successful recovery."""
-    scope = ("read-only" if agent.writes == [] else f"limited to {agent.writes}"
-             if agent.writes else f"barred from {run.cfg.defaults.protected_files}")
-    items = [f"  - {path} — restored from snapshot" for path in breaches]
-    if metadata_was_changed:
-        items.append("  - Git metadata — restored from snapshot")
-    return f"{agent.name} is {scope} but modified {len(items)} protected state item(s):\n" + "\n".join(items)
+def _scope_description(agent: AgentConfig, run: PermissionRun) -> str:
+    if agent.writes == []:
+        return "read-only"
+    if agent.writes:
+        return f"limited to {agent.writes}"
+    return f"barred from {run.cfg.defaults.protected_files}"
 
 
-def _restore_permitted(snapshot: RepositorySnapshot, saved: dict[str, FileState]) -> None:
-    """Reapply permitted post-call paths after denied paths and metadata recover."""
-    for path, state in saved.items():
-        restore_preserved_path(snapshot, path, state)
+def _breach_message(agent: AgentConfig, run: PermissionRun, paths: list[str],
+                    metadata: list[str], runtime_changed: bool) -> str:
+    """Explain restored ordinary paths and non-restored Git-state changes.
 
-
-def _expected_paths(snapshot: RepositorySnapshot, touched: list[str],
-                    saved: dict[str, FileState]) -> dict[str, FileState]:
-    """Build final state: permitted post-call paths and baseline paths otherwise."""
-    return {path: saved.get(path, snapshot.paths.get(path, FileState("missing")))
-            for path in touched}
-
-
-def _post_call_state(snapshot_state: RepositorySnapshot) -> tuple[dict[str, FileState], list[str], bool]:
-    """Capture post-call paths, recovering corrupt Git metadata before retrying."""
-    try:
-        after, touched = worktree_changes(snapshot_state)
-        return after, touched, metadata_changed(snapshot_state)
-    except RepositoryStateError:
-        restore_git_metadata(snapshot_state)
-        after, touched = worktree_changes(snapshot_state)
-        return after, touched, True
+    Example: ``_breach_message(agent, run, paths, metadata, False)``.
+    """
+    items = [f"  - {path} — restored from private snapshot" for path in paths]
+    if runtime_changed:
+        items.append("  - frozen runtime directory node — not auto-restored")
+    if metadata:
+        items.append("  - Git metadata (" + ", ".join(metadata) + ") — not auto-restored")
+    suffix = (" Git metadata was not auto-restored and requires operator inspection."
+              if metadata else "")
+    return (f"{agent.name} is {_scope_description(agent, run)} but modified "
+            f"{len(items)} protected state item(s):\n" + "\n".join(items) + suffix)
 
 
 def _enforce_snapshot(run: PermissionRun, agent: AgentConfig,
                       snapshot_state: RepositorySnapshot) -> list[str]:
-    """Recover denied content and report every permission boundary violation."""
-    after, touched, metadata_was_changed = _post_call_state(snapshot_state)
-    breaches = [path for path in touched if not permitted(path, agent, run)]
-    saved = _preserve_permitted(snapshot_state, touched, after, agent, run)
+    """Detect and roll back denied ordinary paths without changing Git metadata.
+
+    Example: ``touched = _enforce_snapshot(run, agent, before)``.
+    """
+    metadata = git_integrity_changes(snapshot_state)
+    _, touched = worktree_changes(snapshot_state)
+    breaches = [path for path in touched if not permitted(path, agent, run, snapshot_state)]
     _restore_unauthorized(snapshot_state, breaches)
-    if metadata_was_changed:
-        restore_git_metadata(snapshot_state)
-    _restore_permitted(snapshot_state, saved)
-    _verify_recovery(snapshot_state, _expected_paths(snapshot_state, touched, saved))
-    if breaches or metadata_was_changed:
-        raise PermissionBreach(_breach_message(agent, run, breaches, metadata_was_changed))
+    _verify_restored(snapshot_state, breaches)
+    runtime_changed = runtime_node_changed(snapshot_state)
+    if breaches or metadata or runtime_changed:
+        raise PermissionBreach(_breach_message(agent, run, breaches, metadata, runtime_changed))
     return touched
+
+
+def _cleanup_after_enforcement(snapshot_state: RepositorySnapshot,
+                               primary: BaseException | None) -> None:
+    """Raise retained-backup cleanup errors without hiding a primary breach.
+
+    Example: ``_cleanup_after_enforcement(before, breach)`` preserves ``breach``.
+    """
+    try:
+        cleanup_snapshot(snapshot_state)
+    except SnapshotCleanupError as cleanup:
+        if primary is not None:
+            raise primary from cleanup
+        raise PermissionBreach(str(cleanup)) from cleanup
 
 
 def enforce(run: PermissionRun, phase: Phase, agent: AgentConfig,
             before: RepositorySnapshot) -> list[str]:
-    """Compare the tree against `before`; undo and raise if the agent overstepped.
+    """Enforce orchestration policy after a call and always clean private backups.
 
-    Returns the paths it legitimately changed, so the trace records what an
-    agent actually touched rather than only what it claimed in its envelope.
-
-    Detection alone would leave the repo holding an unauthorized change while
-    reporting a failure, so a byte-backed snapshot restores every denied path,
-    including pre-existing dirty and untracked content, before the phase dies.
-
+    Git command failures fail the phase. Git metadata is reported, never repaired.
     Example: ``touched = enforce(run, phase, agent, before)``.
     """
     del phase
+    primary: BaseException | None = None
     try:
         return _enforce_snapshot(run, agent, before)
+    except PermissionBreach as error:
+        primary = error
+        raise
     except RepositoryStateError as error:
-        raise PermissionBreach(f"repository permission recovery failed: {error}") from error
+        breach = PermissionBreach(
+            f"repository integrity monitor failed: {error}. Git metadata was not "
+            "auto-restored and requires operator inspection.")
+        primary = breach
+        raise breach from error
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        cleanup_snapshot(before)
+        _cleanup_after_enforcement(before, primary)

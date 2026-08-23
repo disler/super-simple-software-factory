@@ -10,6 +10,8 @@ Run a workflow and report on it. **You run and observe — you never step into t
 
 The ADW is the worker. Your job is to launch it, watch the trace, and tell the engineer what happened. Do not read the agent's target files and "help", do not fix the code an agent was supposed to fix, do not edit an envelope. If a run fails, report the failing phase and its violations — the fix is a config, prompt, or ADW change, made deliberately, and then a re-run.
 
+For Claude Code and Codex, native sandboxing is the security boundary. `writes` is orchestration policy, and the Git monitor is a best-effort check/rollback for ordinary Git-visible files; it is not an adversarial filesystem sandbox. Pi has no native sandbox, so do not run untrusted Pi workloads without external isolation. Worktree/disposable-checkout isolation is the next deferred milestone.
+
 ## Launch
 
 Which chain to launch is decided in `how_to_prompt_for_the_eng.md`, and the short version is: **the ADW the engineer named, or else the most complete composed chain the work justifies — never a single-agent one.** Read `ls adws/adw_*.py` and the `Phases:` line in each docstring to see what this repo has; the names below are shape, not a menu.
