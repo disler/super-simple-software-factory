@@ -62,9 +62,9 @@ SSSF_CONFIG=adws/adw_sssf_config/sssf.frontier.config.yaml just <recipe> "<promp
 Two things that bite:
 
 - **Never swap rosters on your own.** A different roster is a different cost and a different result. If the default's model looks wrong for the work, say so and let the engineer choose.
-- **Switching rosters mid-session breaks resumption.** `agent_map.json` records the model each coding-agent session was created with, so a joined run (`--adw-id`) whose config now names a different model starts that agent **fresh** instead of resuming its context window. That is deliberate — a bad resume is worse — but it means "plan on the frontier roster, then build on the default" costs the builder its accumulated context. Say so when you report it.
+- **Changing a model or harness mid-session breaks resumption.** `agent_map.json` records both the model and `coding_agent` each session was created with, so a joined run (`--adw-id`) whose config changes either starts that agent **fresh** instead of resuming its context window. An effort-only change retains the session. Legacy entries without `coding_agent` imply Pi, and the runner never falls back to a different harness or model. Say so when you report it.
 
-`--adw-id` is optional on **every** ADW. Given one, the run joins that session if it exists or creates it pinned to exactly that id: same `sessions/{adw_id}/` dirs, same `context_handoff/`, envelopes appended, and each agent resumes its existing coding-agent context window via `agent_map.json`. That is how you chain ADWs — plan under one id, then build under the same id.
+`--adw-id` is optional on **every** ADW. Given one, the run joins that session if it exists or creates it pinned to exactly that id: same `sessions/{adw_id}/` dirs, same `context_handoff/`, envelopes appended, and each agent resumes its existing context only when `agent_map.json` matches its harness and model. That is how you chain ADWs — plan under one id, then build under the same id.
 
 ## Observe
 
@@ -111,7 +111,7 @@ just procs <adw_id>      # what that phase is actually running, with pids
 just kill <adw_id>       # stop it — children first, then the workflow
 ```
 
-`processes` rows with `ended_at IS NULL` are the live ones. If `procs` shows a pi child but the phase has produced no `tool_call` events and its `raw_output.jsonl` is empty, the agent never got started properly — check the model resolves and that nothing is blocking the subprocess, rather than waiting it out. `just kill` verifies each pid still matches the command that was recorded before signalling, because pids get recycled.
+`processes` rows with `ended_at IS NULL` are the live ones. If `procs` shows a harness child but the phase has produced no `tool_call` events and its `raw_output.jsonl` is empty, the agent never got started properly — check the selected CLI, model validation, authentication, and subprocess diagnostics rather than waiting it out. `just kill` verifies each pid still matches the command that was recorded before signalling, because pids get recycled.
 
 A killed run marks itself `fail` and closes its process rows, so the trace never claims work is in flight that is already dead.
 

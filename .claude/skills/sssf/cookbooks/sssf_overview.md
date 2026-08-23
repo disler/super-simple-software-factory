@@ -21,9 +21,9 @@ adws/
 ├── adw_simple_sdlc.py           plan → build → test → review → document; commits each product
 ├── adw_modules/                 ALL low-level logic — ADW scripts stay thin
 │   ├── data_types.py            AgentCall, PhaseParams, Phase, Envelope + one output type per agent call
-│   ├── agents.py                load_config, validate, resolve entry → interface + model + thinking
+│   ├── agents.py                load_config, validate, resolve entry → harness + model + effort
 │   ├── runner.py                the Run object: run.phase(PhaseParams) → ph.call(AgentCall)
-│   ├── agent_pi.py              Pi interface (v1)   ·   agent_cc.py  Claude Code (v2, stubbed)
+│   ├── agent_pi.py, agent_cc.py, agent_codex.py   normalized Pi, Claude Code, and Codex adapters
 │   ├── gates.py                 gate(envelope, run) -> GateReport — one check per item verified
 │   ├── changes.py               git diff vs a resolved base → ChangeSet → envelope for the documenter
 │   ├── prompts.py, session.py, tracer.py, console.py, git_helper.py, utils.py
@@ -37,7 +37,7 @@ adws/
     └── sssf.db                  gitignored SQLite trace db the visualizer polls
 ```
 
-**v1 runs Pi only.** `coding_agent: pi`, default model `gemini-3.6-flash`, thinking `medium`. `claude_code` is specced in the config and stubbed in the interface — it lands in v2.
+`coding_agent` selects `pi`, `claude_code`, or `codex` per agent. Pi is the starter default (`google/gemini-3.6-flash`, `effort: medium`); `thinking` remains a legacy alias. Each adapter validates its executable, model settings, effort, and portable capability profile before a phase starts. It never falls back to another harness.
 
 ## The phase model
 
@@ -51,7 +51,7 @@ Every ADW run is a sequence of **phases**, each one `with run.phase(PhaseParams(
 
 ## Envelopes
 
-Agents have exactly two output channels: reference files written into `context_handoff/`, and a **final valid-JSON response** parsed against the output type the call declared. Code persists it as `envelope.json` and injects it into the next agent's `user.md` via `{{previous_envelope}}`. Bad JSON is never a restart — the harness re-prompts the *same session, context intact*, until it parses (bounded). See `references/handoff.md`.
+Agents have exactly two output channels: reference files written into `context_handoff/`, and a **final valid-JSON response** parsed against the output type the call declared. Code persists it as `envelope.json` and injects it into the next agent's `user.md` via `{{previous_envelope}}`. Bad JSON is never a restart — the harness re-prompts the same selected-harness session, context intact, until it parses (bounded). See `references/handoff.md`.
 
 **The output contract is a synced triad**: the type in `data_types.py` ↔ the `## Report` JSON example in the agent's `user.md` ↔ `output_type=` at the call site. Editing any one of the three means editing all three in the same change — drift between them taxes every call with correction retries.
 
@@ -62,7 +62,7 @@ uv run adws/adw_plan.py "add a /health endpoint"
 uv run adws/adw_plan_build.py requests/health.md --adw-id a1b2c3d4
 ```
 
-The prompt is inline text or a file path. `--adw-id` is optional on every ADW: given one, the run joins that session (same dirs, same `context_handoff/`, agents resume their existing context windows); omitted, a fresh id is minted and printed.
+The prompt is inline text or a file path. `--adw-id` is optional on every ADW: given one, the run joins that session (same dirs, same `context_handoff/`, agents resume only when their harness and model still match); omitted, a fresh id is minted and printed. An effort-only change keeps a matching session; legacy entries without a harness are Pi.
 
 ## When you have finished reading this
 

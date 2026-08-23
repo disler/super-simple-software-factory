@@ -6,7 +6,7 @@ argument-hint: "[install | create adw | run adw | update config | ...]"
 
 # Super Simple Software Factory (SSSF)
 
-Reusable combination of **agents plus code**: deterministic Python ADW scripts own sequencing, retries, and acceptance; coding agents (Pi in v1) work inside bounded phases; typed JSON envelopes carry context between them; everything streams into SQLite for the polled visualizer. Agent proposes, code disposes.
+Reusable combination of **agents plus code**: deterministic Python ADW scripts own sequencing, retries, and acceptance; Pi, Claude Code, and Codex work inside bounded phases; typed JSON envelopes carry context between them; everything streams into SQLite for the polled visualizer. Agent proposes, code disposes.
 
 ## Startup
 
@@ -71,6 +71,8 @@ Deep specs, when needed: [references/config.md](references/config.md) · [refere
 9. **`tools:` is a capability list, `writes:` is the boundary** — `bash` runs anything (including `git checkout`) and `write` reaches any path, so a tool list can never make "this agent changes nothing" true. `writes:` per agent and `protected_files` in defaults are enforced in `adw_modules/permissions.py` after every agent call: unauthorized changes are rolled back and the phase dies. The session runtime under `data_dir` is always writable — a read-only agent is read-only with respect to the REPO, never mute.
 10. **Every ADW ends in `run.finish()`** — phases passing is not the same as the run being accepted. A test phase that ran a red suite succeeded at its job. Pass `accepted=` so the exit code, the session status, and the banner are decided together and cannot disagree.
 
-## v1 scope
+## Harness scope
 
-Pi coding agent only (`coding_agent: pi`), default model `gemini-3.6-flash` via openrouter, thinking `medium`. `claude_code` is schema-valid but stubbed until v2. The visualizer app ships in a later pass — observe via sqlite queries until then.
+`coding_agent` selects `pi`, `claude_code`, or `codex` per agent. Pi is the starter default. Prefer `effort`; `thinking` is its legacy alias and conflicting values are rejected. The effective effort must be supported by the selected harness, and no harness or model fallback occurs.
+
+Use portable `tools` names (`read`, `search`, `shell`, `write`, `edit`) for shared rosters. Codex accepts only its inspection or mutation profile; Pi alone accepts legacy aliases and `harness_engineering` extensions. Claude Code and Codex use native sandbox modes derived from `writes`; every harness also receives after-the-fact Git write protection. Automatic worktrees, branch-per-run isolation, and integration remain later milestones.

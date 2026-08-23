@@ -7,7 +7,7 @@ defaults:
   coding_agent: pi
   model: google/gemini-3.6-flash   # provider/id — a bare pattern is ambiguous across providers
   effort: medium                   # off | minimal | low | medium | high | xhigh | max
-  harness_engineering: []          # Pi-only extensions loaded into the harness (-e)
+  harness_engineering: []          # Pi-specific extensions loaded into the harness (-e)
   # Claude Code example (portable capabilities only; no harness_engineering):
   # coding_agent: claude_code
   # model: anthropic/claude-sonnet-4-5
@@ -18,7 +18,7 @@ defaults:
   # effort: high
   # Roster-wide allowlist; any agent may override with its own list.
   # Pi also accepts legacy names: bash -> shell; grep/find/ls -> search.
-  # A Pi-only harness_engineering extension must name its custom tools here too.
+  # A Pi-specific harness_engineering extension must name its custom tools here too.
   tools:
     - read                         # read file contents
     - shell                        # execute shell commands
@@ -54,7 +54,7 @@ agents:
       system: adws/adw_data/prompt_engineering/planner/system.md
       user: adws/adw_data/prompt_engineering/planner/user.md
     harness_engineering:
-      - adws/adw_data/harness_engineering/subagents.ts    # Pi-only; registers the four subagent_* tools below
+      - adws/adw_data/harness_engineering/subagents.ts    # Pi-specific; registers the four subagent_* tools below
     writes:                        # the plan is the only thing it may leave in the repo
       - specs/
     tools:                         # full recon + write for plan.md; no edit — the planner never touches repo files
@@ -62,7 +62,7 @@ agents:
       - search
       - shell
       - write
-      - subagent_create            # Pi-only extension tools MUST be named here or they are filtered out
+      - subagent_create            # Pi-specific extension tools MUST be named here or they are filtered out
       - subagent_continue
       - subagent_list
       - subagent_remove
@@ -89,7 +89,7 @@ agents:
       system: adws/adw_data/prompt_engineering/scout/system.md
       user: adws/adw_data/prompt_engineering/scout/user.md
     harness_engineering:
-      - adws/adw_data/harness_engineering/subagents.ts    # Pi-only; registers the four subagent_* tools below
+      - adws/adw_data/harness_engineering/subagents.ts    # Pi-specific; registers the four subagent_* tools below
     writes: []                     # read-only, and now actually read-only: its findings
                                    # go to context_handoff/, which is runtime, not the repo
     tools:                         # search-heavy recon; write only so scout_findings.md lands without a bash heredoc
@@ -97,7 +97,7 @@ agents:
       - search
       - shell
       - write
-      - subagent_create            # Pi-only extension tools MUST be named here or they are filtered out
+      - subagent_create            # Pi-specific extension tools MUST be named here or they are filtered out
       - subagent_continue
       - subagent_list
       - subagent_remove

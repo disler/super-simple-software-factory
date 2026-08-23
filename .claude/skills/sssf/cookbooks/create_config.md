@@ -12,16 +12,16 @@ Writes `adws/adw_sssf_config/sssf.config.yaml` — creating the directory if nee
 
 ## The rule
 
-**One agent, one prompt, one purpose.** An entry defines who an agent *is*: its coding agent, model, thinking level, and exactly one system prompt plus one user prompt. How it gets *used* — the output type, a per-call user prompt override — lives at the ADW call site, never here.
+**One agent, one prompt, one purpose.** An entry defines who an agent *is*: its coding agent, model, effort, and exactly one system prompt plus one user prompt. How it gets *used* — the output type, a per-call user prompt override — lives at the ADW call site, never here.
 
 ## Schema
 
 ```yaml
 defaults:
-  coding_agent: pi                 # v1: pi only (claude_code is specced, stubbed until v2)
+  coding_agent: pi                 # pi | claude_code | codex; Pi is the starter default
   model: google/gemini-3.6-flash   # ALWAYS provider/model-id — a bare id is ambiguous
-  thinking: medium                 # off | minimal | low | medium | high | xhigh | max
-  harness_engineering: []          # pi extension names
+  effort: medium                   # preferred spelling; `thinking` is a legacy alias
+  harness_engineering: []          # Pi extension file paths only
   data_dir: adws/adw_data          # runtime home: {data_dir}/sessions/{adw_id}/{agent_name}/
 
 observability:
@@ -30,9 +30,9 @@ observability:
 
 agents:
   - name: planner                  # ADW scripts name agents, never models
-    coding_agent: pi
-    model: google/gemini-3.6-flash
-    thinking: high
+    coding_agent: claude_code
+    model: anthropic/claude-opus-5
+    effort: high
     color: "#a78bfa"               # optional hex — this agent's lane color in the visualizer
     purpose: Turn a request into a plan the builder can implement without asking questions.
     prompt_engineering:
@@ -40,17 +40,20 @@ agents:
       user: adws/adw_data/prompt_engineering/planner/user.md
 
   - name: scout
-    thinking: high                 # unset keys fall through to defaults
+    coding_agent: codex
+    model: openai/gpt-5.6-terra
+    effort: high                   # unset keys fall through to defaults
     purpose: Find and report where things live; change nothing.
     prompt_engineering:
       system: adws/adw_data/prompt_engineering/scout/system.md
       user: adws/adw_data/prompt_engineering/scout/user.md
     tools:                         # optional allowlist — omit the key entirely for all tools
       - read
-      - bash
+      - search
+      - shell
 ```
 
-Every agent entry merges over `defaults`, so an entry only states what differs. Pi's builtin tools are `read`, `bash`, `edit`, `write` — a read-only recon agent gets `[read, bash]`; a builder omits `tools` altogether.
+Every agent entry merges over `defaults`, so an entry only states what differs. Use portable tool names (`read`, `search`, `shell`, `write`, `edit`) across harnesses. Codex accepts only its inspection profile (`read`, `search`, `shell`) or mutation profile (all five); Pi additionally accepts `bash`, `grep`, `find`, and `ls` aliases plus extension tools.
 
 ## After generating
 
@@ -58,4 +61,4 @@ Every agent entry merges over `defaults`, so an entry only states what differs. 
 2. Write `purpose` as one sentence and make the system prompt say the same thing — the two should not drift.
 3. Validate by running the smallest ADW that names your agents; a bad entry fails fast, before anything spawns.
 
-Full field-by-field spec, thinking-level mapping, and model resolution: `references/config.md`. Retuning an existing roster: `update_config.md`.
+`effort` and `thinking` may both be supplied only when they match. The supported effort set is harness-specific, so a mixed roster should use `low`, `medium`, `high`, or `xhigh`. Full field-by-field spec, capability limits, sandbox behavior, and session matching: `references/config.md`. Retuning an existing roster: `update_config.md`.

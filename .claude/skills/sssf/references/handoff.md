@@ -73,9 +73,9 @@ plan = ph.call(AgentCall(output_type=PlanOutput, prompt=prompt,
 
 The user prompt asks for the shape; the type enforces it. They always travel as a pair, which is what lets one agent serve many calls — same system prompt, different user prompt + output type per call site. Output types live in code, never in `sssf.config.yaml`.
 
-**Parse failure is not a restart.** If the response doesn't parse or doesn't validate, the harness re-prompts the **same session** with a correction naming the required fields — bounded by `JSON_FIX_ATTEMPTS` in `agents.py` (2). Gate violations use the identical mechanism, bounded instead by the phase's `retries`. A cold restart would throw away the context that produced the near-miss.
+**Parse failure is not a restart.** If the response doesn't parse or doesn't validate, the harness re-prompts the **same selected-harness session** with a correction naming the required fields — bounded by `JSON_FIX_ATTEMPTS` in `agents.py` (2). Gate violations use the identical mechanism, bounded instead by the phase's `retries`. A cold restart would throw away the context that produced the near-miss.
 
-In v1 there is no separate continue call to make: `agent_pi.run()` passes `--session-id`, which pi treats as create-or-continue, so running an agent and continuing it are the same call with the same id. Before parsing, the harness also tolerates a fenced `json` code block or prose wrapped around the object — but the prompt still asks for bare JSON, and every failed attempt is persisted as an invalid envelope row.
+Each adapter uses its own native continuation mechanism: Pi supplies the same session id, Claude Code resumes the recorded session, and Codex resumes the recorded thread. The common contract is the same: corrections retain the session whenever the harness and model still match. Before parsing, the harness also tolerates a fenced `json` code block or prose wrapped around the object — but the prompt still asks for bare JSON, and every failed attempt is persisted as an invalid envelope row.
 
 ## Injecting the previous envelope
 
@@ -136,26 +136,27 @@ adws/adw_data/sessions/{adw_id}/
 ├── context_handoff/        the ONE place agents write files for the agents that follow
 └── {agent_name}/
     ├── prompts/            exact prompts sent (system.md + user.md), saved before execution
-    ├── pi_sessions/        pi's own session state for this agent
+    ├── pi_sessions/        Pi session state (Pi only)
+    ├── harness_sessions/   runtime files for other harnesses
     ├── raw_output.jsonl    full JSONL stream from the coding agent, appended live
     └── envelope.json       the final valid-JSON response — captured, validated, persisted by code
 ```
 
-`session.ensure(cfg, adw_id)` mints or joins the id and creates these dirs. One `context_handoff/` per session, shared by every agent — the single location for cross-agent files.
+`session.ensure(cfg, adw_id)` mints or joins the id and creates these dirs. One `context_handoff/` per session, shared by every agent — the single location for cross-agent files. Pi retains its historical `pi_sessions/` directory; the other harnesses use `harness_sessions/`.
 
 ## agent_map.json and resuming
 
 ```json
 {
   "planner": {"session_id": "sssf-a1b2c3d4-planner-9f2e",
-              "model": "google/gemini-3.6-flash", "coding_agent": "pi"},
+              "model": "google/gemini-3.6-flash", "coding_agent": "pi", "effort": "medium"},
   "builder": {"session_id": "sssf-a1b2c3d4-builder-71ac",
-              "model": "google/gemini-3.6-flash", "coding_agent": "pi"}
+              "model": "openai/gpt-5.6-terra", "coding_agent": "codex", "effort": "high"}
 }
 ```
 
-This map is the key that lets a later ADW rejoin each agent's **existing context window**. Run `adw_build.py --adw-id a1b2c3d4` after `adw_plan.py` and the builder resumes its own session rather than starting cold.
+This map is the key that lets a later ADW rejoin each agent's **existing context window**. Run `adw_build.py --adw-id a1b2c3d4` after `adw_plan.py` and a matching builder resumes its own session rather than starting cold.
 
-The map records the model each session was created with. If config drift changes an agent's model, that agent starts a **fresh** session and the map is updated — never a bad resume. `agent_sessions` in `sssf.db` is the queryable mirror of this file.
+Resumption requires the configured agent's harness and model to match the map entry. A changed model or `coding_agent` starts a **fresh** session and updates the map; an effort-only change retains the session. Legacy entries without `coding_agent` imply Pi. The runner never falls back to another harness or model. `agent_sessions` in `sssf.db` is the queryable mirror of this file.
 
 **Files are the raw record; the db is the queryable mirror.** Losing `sssf.db` loses nothing that can't be rebuilt from `raw_output.jsonl`, `envelope.json`, and `agent_map.json`.

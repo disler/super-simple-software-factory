@@ -3,8 +3,6 @@
 > **Repeatable agents-plus-code workflows, packaged as one skill, stamped into any repo.**
 > Deterministic Python owns the graph. Coding agents are bounded nodes inside it.
 
-📺 Full breakdown on YouTube: **[Super Simple Software Factory](https://youtu.be/haUfb1ievTE)**
-
 <p align="center">
   <img src="images/00_swimlane_waterfall.svg" alt="A run as swim lanes: engineer, code, planner, builder, and reviewer phases laid on a time axis, each block labelled with its duration, one phase still running and the next still queued" width="850">
 </p>
@@ -58,7 +56,7 @@ Copy `.claude/skills/sssf/` into the target repo and type `/sssf install` inside
 
 ### Manual Install
 
-**Prereqs:** [`uv`](https://docs.astral.sh/uv/), [`pi`](https://github.com/mariozechner/pi-coding-agent), `sqlite3`, and an API key for whichever providers your roster names (see below). [`bun`](https://bun.sh) only if you want the visualizer.
+**Prereqs:** `uv`, `sqlite3`, and the CLI selected by each roster entry: Pi, Claude Code, or Codex. `bun` is only needed for the visualizer. The installer probes all three CLIs with `--version`; a missing CLI is a warning until an agent selects it.
 
 ```bash
 # 1. get the skill into the target repo
@@ -68,7 +66,7 @@ cp -r /path/to/super-simple-software-factory/.claude/skills/sssf .claude/skills/
 # 2. stamp the factory (run from the target repo ROOT, the cwd is where everything lands)
 uv run .claude/skills/sssf/scripts/install.py
 cp .env.sample .env                              # then set OPENROUTER_API_KEY
-pi --version                                     # confirm pi is on PATH, or set PI_PATH in .env
+pi --version                                     # starter roster: confirm Pi is on PATH, or set PI_PATH in .env
 git init && git commit --allow-empty -m init     # chains that end in a commit phase need a repo
 
 # 3. smoke test: two cheap read-only runs, end to end
@@ -82,11 +80,11 @@ uv run adws/adw_prompt.py "reply with a one-line summary of this repo" --agent s
 
 Re-running `install.py` is safe. It skips every file that already exists and reports what it skipped, so a second run doubles as a drift check. `--force` refreshes stamped code to the skill's current version, but it overwrites **all** stamped files including your `sssf.config.yaml` and your prompts, so commit first.
 
-Green on the smoke test means the whole path works: config validated, session minted, Pi ran, envelope parsed, events landed in `adws/adw_data/sssf.db`. Fix it there before composing anything larger, because every multi-agent chain rides this exact path.
+Green on the smoke test means the whole path works: config validated, a session minted, the selected harness ran, the envelope parsed, and events landed in `adws/adw_data/sssf.db`. Fix it there before composing anything larger, because every multi-agent chain rides this exact path.
 
 ### Which API keys you actually need
 
-That depends on your roster, not on this repo. Every `model:` in `sssf.config.yaml` is written `provider/model-id`, and the provider half decides the key. Which key pi reads for a given provider comes from `~/.pi/agent/models.json`.
+That depends on your roster, not on this repo. The Pi starter roster uses `provider/model-id`, and the provider half decides the key. Claude Code and Codex use the authentication already configured for their respective CLIs; the factory does not add token variables for them.
 
 The starter roster deliberately mixes providers to show the point, so out of the box it wants three:
 
@@ -148,9 +146,9 @@ There is no DSL here. No framework to learn. It is Python, YAML, agents, and a s
 
 ```yaml
 defaults:
-  coding_agent: pi                 # v1 runs pi only, claude_code is schema-valid and stubbed
+  coding_agent: pi                 # pi | claude_code | codex; Pi remains the starter default
   model: google/gemini-3.6-flash   # provider/model-id, a bare id can match several providers
-  thinking: medium                 # off | minimal | low | medium | high | xhigh | max
+  effort: medium                   # preferred; `thinking` is a legacy alias
   protected_files:                 # no agent may edit the machinery that grades it
     - adws/adw_modules/
     - adws/adw_sssf_config/
@@ -160,7 +158,7 @@ defaults:
 agents:
   - name: planner
     model: fireworks/accounts/fireworks/models/kimi-k3
-    thinking: high                 # per-agent overrides win over defaults
+    effort: high                   # per-agent overrides win over defaults
     color: "#a78bfa"               # this agent's lane swatch in the trace
     purpose: Turn a request into a plan the builder can implement without asking questions.
     prompt_engineering:
@@ -174,9 +172,9 @@ agents:
 
 Five starter agents ship in the box: `planner`, `builder`, `scout` (read-only recon), `reviewer`, and `documenter`. There is no tester, because running a suite is a known command and therefore code.
 
-Every agent gets its own model, thinking level, prompts, tools, and harness. That is the core four, and it is the whole surface you tune. Give the planner a frontier model and the builder a cheap fast one. Give the scout subagents. Give the reviewer no ability to write code at all.
+Every agent gets its own model, effort, prompts, tools, and harness. That is the core surface you tune. Use portable capabilities (`read`, `search`, `shell`, `write`, `edit`) for rosters that span harnesses; Codex accepts either the inspection profile (`read`, `search`, `shell`) or the mutation profile (all five). Pi additionally supports its legacy aliases and extensions.
 
-**`tools` is a capability list. `writes` is the boundary.** They are not the same thing, and the difference matters: `bash` runs anything, including `git checkout`, and `write` reaches any path. So "this agent changes nothing" is enforced in code, after every call, by comparing the repo before and after. Unauthorized changes are rolled back and the phase fails. A read-only agent is read-only with respect to your repo, never unable to write its own report.
+**`tools` is a capability list. `writes` is the boundary.** They are not the same thing. Claude Code and Codex receive native read-only or workspace-write sandbox settings from `writes`; all harnesses also receive after-the-fact Git change-set protection. Unauthorized repository changes are rolled back and the phase fails. A read-only agent is read-only with respect to your repo, never unable to write its own report.
 
 Config defines who an agent **is**. The ADW call site defines how it is **used**. That split is what lets one agent serve many different calls. **ADW scripts never name a model, they name an agent.**
 
@@ -242,7 +240,7 @@ Determinism is wired into every step. Agents must return a specific structure, e
 
 Gates verify claims, never predictions. Nobody knows which files an agent will touch before it finishes, so gates run **after** the fact against the envelope's own declarations: `artifacts_exist`, `files_non_empty`, `json_parses`, `diff_matches_claims`, `tests_pass(...)`. A gate is a callable with the signature `gate(envelope, run) -> GateReport`, one `check(item, ok, note)` per thing it examined, so a green gate tells you *what* it verified.
 
-When JSON does not parse or a gate returns violations, **nothing restarts**. The harness re-prompts the same session with a correction naming exactly what was wrong, and the context window stays intact. Pi treats `--session-id` as create-or-continue, so running an agent and continuing it are the same call. A cold restart throws away everything the agent learned. A correction costs one message.
+When JSON does not parse or a gate returns violations, **nothing restarts**. The harness re-prompts the same selected-harness session with a correction naming exactly what was wrong, and the context window stays intact. Pi, Claude Code, and Codex each use their native session or thread continuation. A cold restart throws away everything the agent learned. A correction costs one message.
 
 The output contract lives in three places and they are one thing: the type in `data_types.py`, the JSON example in that agent's `user.md` `## Report` section, and `output_type=` at the call site. **Change one, change all three in the same edit.**
 
@@ -254,7 +252,7 @@ The output contract lives in three places and they are one thing: the type in `d
   <img src="images/06_trace_path.svg" alt="Running agents to tracer.py to a WAL SQLite db with seven tables, read by a cursor poll query, with no websocket and no ingest endpoint" width="780">
 </p>
 
-One data path, no exceptions: **agents write to SQLite, readers poll SQLite.** `agent_pi.py` tails the coding agent's JSONL stdout line by line and the tracer inserts each event while the agent is still working, so tool calls are visible mid-run instead of batched at the end.
+One data path, no exceptions: **agents write to SQLite, readers poll SQLite.** Each adapter normalizes its JSONL stream and the tracer inserts events while the agent is still working, so tool calls are visible mid-run instead of batched at the end.
 
 Ten event types land across seven tables: `sessions`, `phases`, `events`, `envelopes`, `gate_results`, `agent_sessions`, and `processes` (adw_id to pid, so a stuck run can be found and stopped). Every event logs against both its `adw_id` and its `phase_id`, and `parent_id` nests spans, so an agent phase expands into its own tool calls.
 
@@ -362,9 +360,9 @@ Honest edges, because knowing them is cheaper than discovering them.
 | An agent edits something it should not | Detected and rolled back after the call, and the phase fails | Expected. Widen that agent's `writes` if the change was legitimate |
 | Commit phase has nothing to commit | `commit_all` raises if the cwd is not a git repo or nothing changed | `git init` with one commit first. A no-op build fails the phase rather than committing nothing |
 | `install.py --force` | Overwrites **all** stamped files, config and prompts included | Commit before you force |
-| `coding_agent: claude_code` | Schema-valid, but `agent_cc.py` raises | v1 is Pi only |
+| `coding_agent: pi`, `claude_code`, or `codex` | The matching installed CLI runs through its adapter | Select the harness per agent in the roster |
 
-Also missing on purpose, so you know what to add: this runs on your current branch. For real work you want a branch per run, a sandbox around the agent, and a merge step at the end.
+Runs remain on the current checkout. Automatic worktree creation, branch-per-run isolation, and integration or merge workflows are later milestones; native sandboxing and Git write protection are available now.
 
 **Is this overkill for a one-off feature?** Yes. Prompt an agent and move on. This earns its keep when the same workflow runs a hundred times, when validation is the only thing standing between you and a bad merge, and when you need the thousandth run to look like the first.
 
@@ -382,12 +380,12 @@ Where to start, roughly in the order that pays off fastest:
 |---|---|---|
 | Your real commands | `adws/adw_modules/quality.py` | The shipped blocks are placeholders that exit 0. Until you wire this, your test phase is theater |
 | Your prompts | `adws/adw_data/prompt_engineering/{agent}/` | Where your standards live: what a good plan looks like, what a review has to catch |
-| Your roster | `adws/adw_sssf_config/sssf.config.yaml` | Models, thinking levels, tools, and what each agent is allowed to write |
+| Your roster | `adws/adw_sssf_config/sssf.config.yaml` | Harnesses, models, effort, tools, and what each agent is allowed to write |
 | Your chains | `adws/adw_*.py` | Copy the closest workflow and edit the phase list. They are 40 to 180 lines on purpose |
 | Your definition of done | `adws/adw_modules/gates.py` | A gate is one function. Whatever "done" means where you work, write it here |
 | Your agent capabilities | `adws/adw_data/harness_engineering/` | Pi extensions, a different set per agent if that is what the job needs |
 
-And what it deliberately does not do. It runs on your current branch. There is no sandbox, no branch per run, no merge step, no cloud, and no human-in-the-loop approval phase. Those are the obvious next things to build. They are left out so the core stays small enough to read in one sitting, which is the only reason you would trust it enough to change it.
+And what it deliberately does not do. It runs on your current checkout; automatic worktrees, branch-per-run isolation, and integration or merge steps are still later milestones. There is no cloud or human-in-the-loop approval phase. Native sandboxing for Claude Code and Codex plus Git write protection for every harness are already part of the execution boundary.
 
 So take it. Fork it, strip the parts you do not need, rename the agents, throw out half the workflows, and roll what is left into the factory your product actually needs. The specific chains in here matter far less than the shape: code owns the loop, agents own the phases, and every run leaves a trace you can go read.
 
@@ -420,9 +418,6 @@ Vibe coding is not knowing how your system works, and not looking. Agentic engin
 
 Master agentic coding by gaining a deeper understanding of the foundational units of the software factory.
 
-Learn tactical agentic coding patterns with [Tactical Agentic Coding](https://agenticengineer.com/tactical-agentic-coding?y=sssf).
-
-Follow the [IndyDevDan YouTube channel](https://www.youtube.com/@indydevdan) to improve your agentic coding advantage.
 
 ---
 
