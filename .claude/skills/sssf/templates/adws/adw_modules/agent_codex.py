@@ -226,8 +226,38 @@ def _write_schema(request: HarnessRequest) -> Path:
     runtime_dir = Path(request.runtime_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
     schema_path = runtime_dir / "output_schema.json"
-    schema_path.write_text(json.dumps(request.output_schema, ensure_ascii=False), encoding="utf-8")
+    normalized_schema = _normalize_output_schema(request.output_schema)
+    schema_path.write_text(json.dumps(normalized_schema, ensure_ascii=False), encoding="utf-8")
     return schema_path
+
+
+def _normalize_output_schema(schema: dict[str, object]) -> dict[str, object]:
+    """Copy a schema before adding strict structured-output constraints."""
+    normalized = _normalize_schema_object(schema)
+    return normalized
+
+
+def _normalize_schema_value(value: object) -> object:
+    if isinstance(value, dict):
+        copied = {str(key): item for key, item in value.items()}
+        return _normalize_schema_object(copied)
+    if isinstance(value, list):
+        return [_normalize_schema_value(item) for item in value]
+    return value
+
+
+def _normalize_schema_object(schema: Mapping[str, object]) -> dict[str, object]:
+    normalized = {key: _normalize_schema_value(value) for key, value in schema.items()}
+    _normalize_object_properties(normalized)
+    return normalized
+
+
+def _normalize_object_properties(schema: dict[str, object]) -> None:
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return
+    schema["additionalProperties"] = False
+    schema["required"] = list(properties)
 
 
 def _codex_command(request: HarnessRequest, schema_path: Path) -> list[str]:
