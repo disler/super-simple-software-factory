@@ -15,9 +15,46 @@ from pathlib import Path
 
 from . import agents, git_helper
 from .console import Console
-from .data_types import AgentCall, EnvelopeBase, EventRecord, Phase, PhaseParams
+from .data_types import (AgentCall, EnvelopeBase, EventRecord, Phase, PhaseParams,
+                         SSSFConfig)
 from .diagnostics import sanitize_diagnostic, sanitize_text
+from .tracer import Tracer
 from .utils import ensure_dir, now_iso
+
+
+def _runtime_data_dir(repo_root: Path, configured_dir: str) -> Path:
+    """Anchor a relative runtime location to its repository root.
+
+    Example: ``_runtime_data_dir(root, "adws/adw_data")`` stays below ``root``.
+    """
+    path = Path(configured_dir)
+    return path if path.is_absolute() else repo_root / path
+
+
+def _load_agent_map(path: Path) -> dict[str, dict[str, object]]:
+    """Load persisted per-agent session records with a concrete mapping shape.
+
+    Example: ``_load_agent_map(path)["builder"]["session_id"]`` reads a session.
+    """
+    if not path.exists():
+        return {}
+    raw = json.loads(path.read_text())
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"agent map {path!s} expected an object, found {type(raw).__name__}")
+    return _validate_agent_map(path, raw)
+
+
+def _validate_agent_map(path: Path, raw: dict[object, object]) -> dict[str, dict[str, object]]:
+    """Reject session-map entries that cannot safely participate in resumption.
+
+    Example: ``_validate_agent_map(path, {"builder": {}})`` returns that entry.
+    """
+    entries: dict[str, dict[str, object]] = {}
+    for agent, entry in raw.items():
+        if not isinstance(agent, str) or not isinstance(entry, dict):
+            raise RuntimeError(f"agent map {path!s} expected string keys with object values, found {agent!r}")
+        entries[agent] = {str(key): value for key, value in entry.items()}
+    return entries
 
 
 class PhaseHandle:
@@ -43,7 +80,7 @@ class PhaseHandle:
 
 
 class Run:
-    def __init__(self, cfg, adw_id: str, tracer, engineer: str):
+    def __init__(self, cfg: SSSFConfig, adw_id: str, tracer: Tracer, engineer: str) -> None:
         self.cfg = cfg
         self.adw_id = adw_id
         self.tracer = tracer
@@ -54,14 +91,14 @@ class Run:
         self.cost = 0.0
         self._seq = tracer.max_phase_seq(adw_id)   # a joined run continues the sequence
         self.repo_root = git_helper.repo_root()    # where every agent is spawned to work
-        self.session_dir = ensure_dir(Path(cfg.defaults.data_dir) / "sessions" / adw_id)
+        runtime_dir = _runtime_data_dir(self.repo_root, cfg.defaults.data_dir)
+        self.session_dir = ensure_dir(runtime_dir / "sessions" / adw_id)
         self.context_handoff_dir = ensure_dir(self.session_dir / "context_handoff")
         self._agent_map_path = self.session_dir / "agent_map.json"
-        self.agent_map: dict = (json.loads(self._agent_map_path.read_text())
-                                if self._agent_map_path.exists() else {})
+        self.agent_map: dict[str, dict[str, object]] = _load_agent_map(self._agent_map_path)
 
     # ── agent map (adw_id -> per-agent coding-agent session ids) ────────────
-    def save_agent_map(self, agent: str, entry: dict) -> None:
+    def save_agent_map(self, agent: str, entry: dict[str, object]) -> None:
         self.agent_map[agent] = entry
         self._agent_map_path.write_text(json.dumps(self.agent_map, indent=2))
 

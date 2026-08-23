@@ -81,9 +81,10 @@ class RepositorySnapshot:
 
 
 def capture_repository(repo_root: Path, session_dir: Path) -> RepositorySnapshot:
-    """Capture Git-visible ordinary files outside a frozen runtime prefix.
+    """Capture Git-visible ordinary files and freeze permitted runtime scope.
 
-    Example: ``snapshot = capture_repository(run.repo_root, run.session_dir)``.
+    The runtime prefix remains in the captured path set and is permitted only
+    during enforcement. Example: ``snapshot = capture_repository(root, session)``.
     """
     root = validate_repository(repo_root)
     runtime_prefix, runtime_node = capture_runtime_prefix(repo_root, session_dir)

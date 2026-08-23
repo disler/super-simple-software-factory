@@ -8,6 +8,7 @@ import signal
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import TextIO
@@ -15,11 +16,14 @@ from typing import TextIO
 from pydantic import BaseModel
 
 from .harness_types import (HarnessConfigError, HarnessProtocolError,
-                            HarnessUnavailableError, ProcessCallback)
+                            HarnessProcessError, HarnessUnavailableError,
+                            ProcessCallback)
 from .diagnostics import sanitize_diagnostic, sanitize_text
 from .utils import operator_env
 
 JsonEventCallback = Callable[[dict[str, object]], None]
+GROUP_STOP_TIMEOUT_SECONDS = 1.0
+GROUP_POLL_SECONDS = 0.02
 
 
 class ProcessSpec(BaseModel):
@@ -69,19 +73,21 @@ def run_jsonl_process(
     except BaseException:
         temporary_stderr.unlink(missing_ok=True)
         raise
-    returncode: int | None = None
+    returncode = -1
+    stderr_text = ""
     try:
         _notify_spawn(process, on_spawn)
         _write_stdin(process, spec.stdin_text)
         _stream_stdout(process, spec, on_json)
-        returncode = process.wait()
     finally:
-        _finish_process(process)
         try:
-            stderr_text = _persist_sanitized_stderr(temporary_stderr, spec.stderr_output_path)
+            returncode = _finish_process(process)
         finally:
-            _notify_exit(process, on_exit)
-    return ProcessOutcome(returncode=returncode if returncode is not None else -1,
+            try:
+                stderr_text = _persist_sanitized_stderr(temporary_stderr, spec.stderr_output_path)
+            finally:
+                _notify_exit(process, on_exit)
+    return ProcessOutcome(returncode=returncode,
                           stderr_tail=stderr_text[-800:])
 
 
@@ -190,42 +196,88 @@ def _secure_diagnostic_path(path: Path) -> None:
     os.chmod(path, 0o600)
 
 
-def _finish_process(process: subprocess.Popen[str]) -> None:
-    _terminate_process_group(process)
+def _finish_process(process: subprocess.Popen[str]) -> int:
+    if os.name != "posix":
+        return _finish_direct_process(process)
+    return _finish_posix_group(process)
+
+
+def _finish_direct_process(process: subprocess.Popen[str]) -> int:
+    if process.poll() is None:
+        process.terminate()
     try:
-        process.wait(timeout=5)
+        return process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        _kill_process_group(process)
-        process.wait()
-
-
-def _terminate_process_group(process: subprocess.Popen[str]) -> None:
-    """Signal the harness session even when its CLI leader has already exited.
-
-    Example: ``_terminate_process_group(process)`` stops normal same-group children.
-    """
-    if os.name != "posix":
-        if process.poll() is None:
-            process.terminate()
-        return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-
-
-def _kill_process_group(process: subprocess.Popen[str]) -> None:
-    """Escalate termination for a still-running harness process group.
-
-    Example: ``_kill_process_group(process)`` after the graceful timeout.
-    """
-    if os.name != "posix":
         process.kill()
-        return
+        return process.wait()
+
+
+def _finish_posix_group(process: subprocess.Popen[str]) -> int:
+    """Terminate the captured harness group before reaping its leader.
+
+    Keeping the leader unreaped prevents its PID/PGID from being reused while
+    group-wide signals and liveness checks are still in progress.
+    Example: ``_finish_posix_group(process)`` stops same-session descendants.
+    """
+    process_group = _captured_process_group(process)
+    _signal_process_group(process_group, signal.SIGTERM)
+    if _wait_for_group_exit(process_group):
+        return process.wait()
+    _signal_process_group(process_group, signal.SIGKILL)
+    if _wait_for_group_exit(process_group):
+        return process.wait()
+    raise HarnessProcessError("process_group", process_group,
+                              "a process group that exits after SIGKILL")
+
+
+def _captured_process_group(process: subprocess.Popen[str]) -> int:
+    """Return the child-only session group created by ``start_new_session``.
+
+    Example: ``_captured_process_group(process)`` returns the leader PID as PGID.
+    """
+    process_group = process.pid
+    if process_group == os.getpgrp():
+        raise HarnessProcessError("process_group", process_group,
+                                  "an isolated child process group")
+    return process_group
+
+
+def _signal_process_group(process_group: int, signal_number: int) -> None:
+    """Signal a captured child-only group without touching the caller's group.
+
+    Example: ``_signal_process_group(pgid, signal.SIGTERM)`` requests shutdown.
+    """
     try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
+        os.killpg(process_group, signal_number)
+    except (PermissionError, ProcessLookupError):
         return
+
+
+def _wait_for_group_exit(process_group: int) -> bool:
+    """Poll a captured group until it disappears or the short deadline expires.
+
+    Example: ``_wait_for_group_exit(pgid)`` confirms descendant teardown.
+    """
+    deadline = time.monotonic() + GROUP_STOP_TIMEOUT_SECONDS
+    while _process_group_exists(process_group):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(GROUP_POLL_SECONDS)
+    return True
+
+
+def _process_group_exists(process_group: int) -> bool:
+    """Check group liveness without signaling any member.
+
+    Example: ``_process_group_exists(pgid)`` returns false after final teardown.
+    """
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return False
+    return True
 
 
 def _notify_exit(process: subprocess.Popen[str], callback: ProcessCallback | None) -> None:
