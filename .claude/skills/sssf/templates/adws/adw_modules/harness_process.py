@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
+import queue
 import signal
 import shutil
 import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Collection
+from dataclasses import dataclass, field
 from pathlib import Path
+from _thread import LockType
+from threading import Lock, Thread
 from typing import TextIO
 
 from pydantic import BaseModel
@@ -24,6 +29,8 @@ from .utils import operator_env
 JsonEventCallback = Callable[[dict[str, object]], None]
 GROUP_STOP_TIMEOUT_SECONDS = 1.0
 GROUP_POLL_SECONDS = 0.02
+STDOUT_READER_JOIN_SECONDS = 0.25
+STDOUT_POLL_SECONDS = 0.02
 
 
 class ProcessSpec(BaseModel):
@@ -37,6 +44,20 @@ class ProcessSpec(BaseModel):
 class ProcessOutcome(BaseModel):
     returncode: int
     stderr_tail: str = ""
+
+
+@dataclass
+class StdoutReader:
+    """Own one background stdout reader; e.g. ``reader.thread.join()``."""
+
+    stream: TextIO
+    descriptor: int
+    encoding: str
+    errors: str
+    lines: queue.Queue[str | None]
+    descriptor_lock: LockType
+    thread: Thread = field(init=False)
+    descriptor_closed: bool = False
 
 
 def ensure_executable(executable: str, harness: str) -> None:
@@ -83,35 +104,36 @@ def _run_started_process(process: subprocess.Popen[str], spec: ProcessSpec,
 
     Example: ``_run_started_process(process, spec, callback, None, None, stderr)``.
     """
-    returncode = -1
+    returncode: int | None = None
     stderr_text = ""
     try:
-        _run_process_body(process, spec, on_json, on_spawn)
+        returncode = _run_process_body(process, spec, on_json, on_spawn)
     finally:
-        returncode, stderr_text = _close_process(process, spec, temporary_stderr, on_exit)
+        returncode, stderr_text = _close_process(process, returncode, spec,
+                                                  temporary_stderr, on_exit)
     return ProcessOutcome(returncode=returncode,
                           stderr_tail=stderr_text[-800:])
 
 
 def _run_process_body(process: subprocess.Popen[str], spec: ProcessSpec,
-                      on_json: JsonEventCallback, on_spawn: ProcessCallback | None) -> None:
+                      on_json: JsonEventCallback, on_spawn: ProcessCallback | None) -> int | None:
     """Notify, write input, and stream one harness process.
 
     Example: ``_run_process_body(process, spec, callback, None)``.
     """
     _notify_spawn(process, on_spawn)
     _write_stdin(process, spec.stdin_text)
-    _stream_stdout(process, spec, on_json)
+    return _stream_stdout(process, spec, on_json)
 
 
-def _close_process(process: subprocess.Popen[str], spec: ProcessSpec,
+def _close_process(process: subprocess.Popen[str], known_returncode: int | None, spec: ProcessSpec,
                    temporary_stderr: Path, on_exit: ProcessCallback | None) -> tuple[int, str]:
     """Finish the process group, preserve stderr, then issue the exit callback.
 
-    Example: ``_close_process(process, spec, stderr, callback)`` returns diagnostics.
+    Example: ``_close_process(process, None, spec, stderr, callback)`` returns diagnostics.
     """
     try:
-        returncode = _finish_process(process)
+        returncode = known_returncode if known_returncode is not None else _finish_process(process)
     finally:
         try:
             stderr_text = _persist_sanitized_stderr(temporary_stderr, spec.stderr_output_path)
@@ -161,13 +183,137 @@ def _write_stdin(process: subprocess.Popen[str], text: str | None) -> None:
 
 
 def _stream_stdout(process: subprocess.Popen[str], spec: ProcessSpec,
-                   on_json: JsonEventCallback) -> None:
+                   on_json: JsonEventCallback) -> int | None:
+    """Consume stdout without letting an inherited pipe hide leader exit.
+
+    Example: ``_stream_stdout(process, spec, callback)`` returns a known exit.
+    """
     if process.stdout is None:
-        return
+        return None
+    reader = _start_stdout_reader(process.stdout)
     with Path(spec.raw_output_path).open("a") as raw_output:
-        for line_number, line in enumerate(process.stdout, start=1):
-            _consume_line(line, line_number, raw_output, on_json)
-            raw_output.flush()
+        try:
+            return _monitor_stdout(process, reader, raw_output, on_json)
+        finally:
+            _release_stdout_reader(reader)
+
+
+def _start_stdout_reader(stream: TextIO) -> StdoutReader:
+    reader = StdoutReader(stream=stream, descriptor=os.dup(stream.fileno()),
+                          encoding=stream.encoding or "utf-8", errors=stream.errors or "strict",
+                          lines=queue.Queue(), descriptor_lock=Lock())
+    reader.thread = Thread(target=_copy_stdout_lines, args=(reader,), daemon=True)
+    reader.thread.start()
+    return reader
+
+
+def _copy_stdout_lines(reader: StdoutReader) -> None:
+    decoder = codecs.getincrementaldecoder(reader.encoding)(errors=reader.errors)
+    pending = ""
+    try:
+        while chunk := os.read(reader.descriptor, 8192):
+            pending = _queue_stdout_chunk(decoder.decode(chunk), pending, reader.lines)
+        trailing = pending + decoder.decode(b"", final=True)
+        if trailing:
+            reader.lines.put(trailing)
+    except (OSError, UnicodeError):
+        pass
+    finally:
+        _close_reader_descriptor(reader)
+        reader.lines.put(None)
+
+
+def _queue_stdout_chunk(chunk: str, pending: str, lines: queue.Queue[str | None]) -> str:
+    pending += chunk
+    while "\n" in pending:
+        line, pending = pending.split("\n", 1)
+        lines.put(line + "\n")
+    return pending
+
+
+def _monitor_stdout(process: subprocess.Popen[str], reader: StdoutReader,
+                    raw_output: TextIO, on_json: JsonEventCallback) -> int | None:
+    line_number = 0
+    while True:
+        returncode = process.poll()
+        if returncode is not None:
+            return _finish_leader_stream(process, reader, raw_output, on_json, line_number)
+        has_line, line = _next_stdout_line(reader, STDOUT_POLL_SECONDS)
+        if not has_line:
+            continue
+        if line is None:
+            return None
+        line_number = _consume_stdout_line(line, line_number, raw_output, on_json)
+
+
+def _finish_leader_stream(process: subprocess.Popen[str], reader: StdoutReader,
+                          raw_output: TextIO, on_json: JsonEventCallback,
+                          line_number: int) -> int:
+    returncode = _finish_process(process)
+    _join_stdout_reader(reader)
+    _drain_stdout_lines(reader, raw_output, on_json, line_number)
+    return returncode
+
+
+def _next_stdout_line(reader: StdoutReader, timeout: float) -> tuple[bool, str | None]:
+    try:
+        return True, reader.lines.get(timeout=timeout)
+    except queue.Empty:
+        return False, None
+
+
+def _consume_stdout_line(line: str, line_number: int, raw_output: TextIO,
+                         on_json: JsonEventCallback) -> int:
+    next_number = line_number + 1
+    _consume_line(line, next_number, raw_output, on_json)
+    raw_output.flush()
+    return next_number
+
+
+def _join_stdout_reader(reader: StdoutReader) -> None:
+    reader.thread.join(STDOUT_READER_JOIN_SECONDS)
+    if not reader.thread.is_alive():
+        return
+    _close_reader_descriptor(reader)
+    reader.thread.join(STDOUT_READER_JOIN_SECONDS)
+    if reader.thread.is_alive():
+        raise HarnessProcessError("stdout_reader", reader.thread.name,
+                                  "a stdout pipe that closes after group teardown")
+
+
+def _drain_stdout_lines(reader: StdoutReader, raw_output: TextIO,
+                        on_json: JsonEventCallback, line_number: int) -> None:
+    while True:
+        has_line, line = _next_stdout_line(reader, 0)
+        if not has_line or line is None:
+            return
+        line_number = _consume_stdout_line(line, line_number, raw_output, on_json)
+
+
+def _release_stdout_reader(reader: StdoutReader) -> None:
+    _close_reader_descriptor(reader)
+    reader.thread.join(STDOUT_READER_JOIN_SECONDS)
+    _close_stdout_stream(reader.stream)
+
+
+def _close_reader_descriptor(reader: StdoutReader) -> None:
+    with reader.descriptor_lock:
+        if reader.descriptor_closed:
+            return
+        reader.descriptor_closed = True
+        try:
+            os.close(reader.descriptor)
+        except OSError:
+            return
+
+
+def _close_stdout_stream(stream: TextIO) -> None:
+    if stream.closed:
+        return
+    try:
+        stream.close()
+    except OSError:
+        return
 
 
 def _consume_line(line: str, line_number: int, raw_output: TextIO,
