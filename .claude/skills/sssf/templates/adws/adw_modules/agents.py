@@ -19,7 +19,8 @@ from . import permissions, prompts
 from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
                          GateCheck, GateReport, Phase, SSSFConfig)
 from .harness_types import (HarnessError, HarnessEvent, HarnessProfile,
-                            HarnessRequest, HarnessResult, UsageBreakdown)
+                            HarnessName, HarnessRequest, HarnessResult,
+                            UsageBreakdown)
 from .harness_registry import get_adapter
 
 JSON_FIX_ATTEMPTS = 2      # continue-with-correction attempts for malformed JSON
@@ -124,7 +125,7 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
     spent = UsageBreakdown()
     base_request = HarnessRequest(
         profile=_harness_profile(agent), prompt="", system_prompt=system_text,
-        session_id=None, runtime_dir=str((agent_dir / "harness_sessions").resolve()),
+        session_id=None, runtime_dir=_runtime_dir(agent_dir, agent.coding_agent),
         raw_output_path=str((agent_dir / "raw_output.jsonl").resolve()),
         cwd=str(run.repo_root), output_schema=call.output_type.model_json_schema(),
     )
@@ -270,6 +271,16 @@ def _harness_profile(agent: AgentConfig) -> HarnessProfile:
     return HarnessProfile(harness=agent.coding_agent, model=agent.model,
                           effort=agent.effort or "medium", tools=agent.tools,
                           extensions=agent.harness_engineering, writes=agent.writes)
+
+
+def _runtime_dir(agent_dir: Path, harness: HarnessName) -> str:
+    """Return the storage location expected by a harness.
+
+    Example: ``_runtime_dir(Path("run"), "pi")`` preserves Pi's session store.
+    """
+    if harness == "pi":
+        return str((agent_dir / "pi_sessions").resolve())
+    return str((agent_dir / "harness_sessions").resolve())
 
 
 def _event_forwarder(run, phase: Phase, agent: AgentConfig):
