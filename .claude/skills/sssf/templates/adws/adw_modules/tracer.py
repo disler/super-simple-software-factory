@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 
 from .data_types import AgentConfig, EventRecord, GateReport, Phase
+from .diagnostics import sanitize_diagnostic, sanitize_json_text, sanitize_text
 from .utils import ensure_dir, new_id, now_iso
 
 SCHEMA = """
@@ -121,6 +122,8 @@ class Tracer:
 
     # ── events ──────────────────────────────────────────────────────────────
     def event(self, record: EventRecord) -> str:
+        record = record.model_copy(update={"name": sanitize_text(record.name),
+                                           "payload": sanitize_diagnostic(record.payload)})
         event_id = f"evt_{new_id(12)}"
         ts = now_iso()
         line = {"event_id": event_id, "ts": ts, **record.model_dump()}
@@ -155,7 +158,7 @@ class Tracer:
 
     def session_request(self, adw_id: str, request: str) -> None:
         self.conn.execute("UPDATE sessions SET request=? WHERE adw_id=?",
-                          (request[:500], adw_id))
+                          (sanitize_text(request)[:500], adw_id))
 
     def session_finish(self, adw_id: str, ok: bool) -> None:
         self.conn.execute(
@@ -224,7 +227,8 @@ class Tracer:
             " ON CONFLICT(phase_id) DO UPDATE SET status=excluded.status,"
             " attempt=excluded.attempt, error=excluded.error, ended_at=excluded.ended_at",
             (phase.phase_id, phase.adw_id, phase.seq, p.name, p.kind, p.owner,
-             p.description, phase.status, phase.attempt, p.retries, phase.error,
+             p.description, phase.status, phase.attempt, p.retries,
+             sanitize_text(phase.error) if phase.error else None,
              phase.started_at, phase.ended_at),
         )
 
@@ -235,7 +239,7 @@ class Tracer:
             "INSERT INTO envelopes (envelope_id, adw_id, phase_id, agent, output_type,"
             " payload_json, valid, attempt, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (f"env_{new_id(12)}", phase.adw_id, phase.phase_id, agent, output_type,
-             payload_json, int(valid), attempt, now_iso()),
+             sanitize_json_text(payload_json), int(valid), attempt, now_iso()),
         )
 
     def gate_row(self, phase: Phase, gate: str, report: GateReport, attempt: int) -> None:
@@ -244,8 +248,8 @@ class Tracer:
             "INSERT INTO gate_results (adw_id, phase_id, attempt, gate, passed,"
             " violations_json, checks_json, created_at) VALUES (?,?,?,?,?,?,?,?)",
             (phase.adw_id, phase.phase_id, attempt, gate, int(report.passed),
-             json.dumps(report.violations),
-             json.dumps([c.model_dump() for c in report.checks]), now_iso()),
+             json.dumps(sanitize_diagnostic(report.violations)),
+             json.dumps(sanitize_diagnostic([c.model_dump() for c in report.checks])), now_iso()),
         )
 
     def agent_session_row(self, adw_id: str, agent: AgentConfig, session_id: str,

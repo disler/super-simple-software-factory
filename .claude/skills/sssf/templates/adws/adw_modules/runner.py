@@ -16,6 +16,7 @@ from pathlib import Path
 from . import agents, git_helper
 from .console import Console
 from .data_types import AgentCall, EnvelopeBase, EventRecord, Phase, PhaseParams
+from .diagnostics import sanitize_diagnostic, sanitize_text
 from .utils import ensure_dir, now_iso
 
 
@@ -28,8 +29,10 @@ class PhaseHandle:
         self.run.tracer.event(EventRecord(adw_id=self.run.adw_id,
                                           phase_id=self.phase.phase_id,
                                           type="log", name=self.phase.params.name,
-                                          payload=payload))
-        self.run.console.note(", ".join(f"{k}: {v}" for k, v in payload.items()))
+                                          payload=sanitize_diagnostic(payload)))
+        line = ", ".join(f"{key}: {sanitize_diagnostic(value)}"
+                         for key, value in payload.items())
+        self.run.console.note(line)
         if self.phase.params.kind == "engineer" and "input" in payload:
             self.run.tracer.session_request(self.run.adw_id, str(payload["input"]))
 
@@ -87,7 +90,7 @@ class Run:
             yield PhaseHandle(self, phase)
         except BaseException as error:
             phase.status = "fail"                      # success must be earned
-            phase.error = str(error)[:1000]
+            phase.error = sanitize_text(str(error))[:1000]
             phase.ended_at = now_iso()
             self.tracer.event(EventRecord(adw_id=self.adw_id, phase_id=phase.phase_id,
                                           type="error", name=params.name,

@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from .data_types import EnvelopeBase, EventRecord, Phase
+from .diagnostics import sanitize_text
 
 KIND_COLOR = {"engineer": "cyan", "agent": "magenta", "code": "yellow"}
 MAX_LINE = 160          # dynamic text (summaries, violations, errors) is clipped
@@ -37,8 +38,9 @@ class Console:
         self._out = RichConsole(highlight=False, soft_wrap=True)
 
     # ── the one helper: print AND trace, always together ────────────────────
-    def _emit(self, markup: str, level: str = "info", renderable=None) -> None:
-        text = Text.from_markup(markup)
+    def _emit(self, markup: str, level: str = "info",
+              renderable: object | None = None) -> None:
+        text = Text.from_markup(sanitize_text(markup))
         self._out.print(renderable if renderable is not None else text)
         self.tracer.event(EventRecord(
             adw_id=self.adw_id, phase_id=self.phase_id, type="log",

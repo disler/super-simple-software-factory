@@ -19,6 +19,7 @@ import yaml
 from . import permissions, prompts
 from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
                          GateCheck, GateReport, Phase, SSSFConfig)
+from .diagnostics import sanitize_diagnostic
 from .harness_types import (HarnessError, HarnessEvent, HarnessProfile,
                             HarnessAdapter, HarnessName, HarnessRequest, HarnessResult,
                             UsageBreakdown)
@@ -442,14 +443,16 @@ def _parse_with_retries(run, phase: Phase, call: AgentCall, result, send):
                 f"fields: {fields}. No prose, no code fences.")
 
 
-def _persist_envelope(run, phase: Phase, agent_name: str, call: AgentCall,
+def _persist_envelope(run: "Run", phase: Phase, agent_name: str, call: AgentCall,
                       envelope: Optional[EnvelopeBase], attempt: int,
                       valid: bool, raw: str = "") -> None:
-    payload_json = envelope.model_dump_json(indent=2) if envelope else json.dumps({"raw": raw[-2000:]})
+    payload = envelope.model_dump() if envelope else {"raw": raw[-2000:]}
+    payload_json = json.dumps(sanitize_diagnostic(payload), indent=2)
     run.tracer.envelope_row(phase, agent_name, call.output_type.__name__,
                             payload_json, valid, attempt)
     if envelope:
         record = {"agent_name": agent_name, "purpose": resolve(run.cfg, agent_name).purpose,
                   "output_type": call.output_type.__name__, "attempt": attempt,
                   **envelope.model_dump()}
-        (run.session_dir / agent_name / "envelope.json").write_text(json.dumps(record, indent=2))
+        (run.session_dir / agent_name / "envelope.json").write_text(
+            json.dumps(sanitize_diagnostic(record), indent=2))

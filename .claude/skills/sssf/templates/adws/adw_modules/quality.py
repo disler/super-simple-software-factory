@@ -38,6 +38,7 @@ from typing import Callable
 
 from .data_types import (EventRecord, QualityCheckResult, QualityCheckSpec, QualityResult,
                          VerifyOutput)
+from .diagnostics import sanitize_text
 from .utils import now_iso, operator_env
 
 # How much of a failing command's output rides back inside the envelope. Enough
@@ -94,10 +95,9 @@ def _run(spec: QualityCheckSpec, run) -> QualityCheckResult:
         stderr = str(error)
 
     duration = time.monotonic() - clock
-    output_artifact.write_text(
+    output_artifact.write_text(sanitize_text(
         f"$ {command}\nexit: {returncode}\nduration_seconds: {duration:.3f}\n"
-        f"\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n"
-    )
+        f"\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n"))
     passed = returncode == 0
     run.tracer.event(EventRecord(
         adw_id=run.adw_id,
@@ -128,7 +128,7 @@ def _run(spec: QualityCheckSpec, run) -> QualityCheckResult:
         passed=passed,
         duration_seconds=duration,
         output_artifact=str(output_artifact),
-        output_tail=(stdout + stderr)[-TAIL_CHARS:],
+        output_tail=sanitize_text((stdout + stderr)[-TAIL_CHARS:]),
     )
 
 

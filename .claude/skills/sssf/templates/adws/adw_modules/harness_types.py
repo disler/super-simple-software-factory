@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Callable, Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from .diagnostics import sanitize_diagnostic, sanitize_text
 
 HarnessName = Literal["pi", "claude_code", "codex"]
 PortableCapability = Literal["read", "search", "shell", "write", "edit"]
@@ -73,6 +75,14 @@ class HarnessEvent(BaseModel):
     started_at: str | None = None
     ended_at: str | None = None
 
+    @model_validator(mode="after")
+    def redact_diagnostic_payload(self) -> "HarnessEvent":
+        """Redact event diagnostics while the adapter retains its parsed protocol event."""
+        self.name = sanitize_text(self.name)
+        sanitized = sanitize_diagnostic(self.payload)
+        self.payload = sanitized if isinstance(sanitized, dict) else {}
+        return self
+
 
 class HarnessResult(BaseModel):
     text: str = ""
@@ -95,8 +105,9 @@ class HarnessError(RuntimeError):
     category = "harness"
 
     def __init__(self, harness: str, value: object, expected: str) -> None:
-        message = (f"{self.category} error for harness {harness!r}: value {value!r}; "
-                   f"expected {expected}")
+        safe_value = sanitize_diagnostic(value)
+        message = (f"{self.category} error for harness {sanitize_text(harness)!r}: "
+                   f"value {safe_value!r}; expected {sanitize_text(expected)}")
         super().__init__(message)
 
 
