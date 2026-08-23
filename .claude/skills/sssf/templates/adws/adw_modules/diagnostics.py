@@ -8,9 +8,10 @@ import re
 from collections.abc import Mapping
 
 REDACTED = "[REDACTED]"
-MINIMUM_SECRET_LENGTH = 6
+SHORT_SECRET_LENGTH = 5
 SENSITIVE_ENV_KEY = re.compile(
     r"token|key|secret|password|passwd|auth|credential|cookie", re.I)
+RICH_TAG = re.compile(r"(\[/?[a-z][^\]]*\])", re.I)
 BEARER_VALUE = re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{6,}", re.I)
 AUTHORIZATION = re.compile(
     r"\b(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;]+", re.I)
@@ -20,7 +21,7 @@ ASSIGNMENT = re.compile(
 URL_CREDENTIALS = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^@\s/]+@", re.I)
 API_TOKEN = re.compile(
     r"\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{8,}|sk-ant-[A-Za-z0-9_-]{8,}|"
-    r"(?:gh[pousr]|glpat)-[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|"
+    r"(?:gh[pousr][_-]|glpat-)[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|"
     r"(?:AKIA|ASIA)[A-Z0-9]{12,}|(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{8,})\b")
 
 
@@ -71,22 +72,31 @@ def _sanitize_mapping(value: Mapping[object, object]) -> dict[str, object]:
 
 
 def _is_secret_entry(key: str, value: object) -> bool:
-    if not isinstance(value, str):
-        return False
-    if len(value) < MINIMUM_SECRET_LENGTH:
-        return False
-    return bool(SENSITIVE_ENV_KEY.search(key))
+    return isinstance(value, str) and bool(SENSITIVE_ENV_KEY.search(key))
 
 
 def _redact_environment_values(text: str) -> str:
     redacted = text
     for secret in _environment_secrets():
-        redacted = redacted.replace(secret, REDACTED)
+        redacted = _redact_environment_value(redacted, secret)
     return redacted
 
 
 def _environment_secrets() -> tuple[str, ...]:
     values = [value for key, value in os.environ.items()
-              if _is_secret_entry(key, value)]
+              if _is_secret_entry(key, value) and value]
     unique = set(values)
     return tuple(sorted(unique, key=len, reverse=True))
+
+
+def _redact_environment_value(text: str, secret: str) -> str:
+    if len(secret) > SHORT_SECRET_LENGTH:
+        return text.replace(secret, REDACTED)
+    return _redact_short_environment_value(text, secret)
+
+
+def _redact_short_environment_value(text: str, secret: str) -> str:
+    pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(secret)}(?![A-Za-z0-9_])")
+    parts = RICH_TAG.split(text)
+    return "".join(part if RICH_TAG.fullmatch(part) else pattern.sub(REDACTED, part)
+                   for part in parts)

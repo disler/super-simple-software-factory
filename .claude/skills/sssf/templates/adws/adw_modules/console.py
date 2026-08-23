@@ -9,7 +9,7 @@ so a CI log reads exactly like a terminal.
 from __future__ import annotations
 
 from rich.console import Console as RichConsole
-from rich.markup import escape
+from rich.markup import MarkupError, escape
 from rich.panel import Panel
 from rich.text import Text
 
@@ -40,7 +40,7 @@ class Console:
     # ── the one helper: print AND trace, always together ────────────────────
     def _emit(self, markup: str, level: str = "info",
               renderable: object | None = None) -> None:
-        text = Text.from_markup(sanitize_text(markup))
+        text = _safe_text(markup)
         self._out.print(renderable if renderable is not None else text)
         self.tracer.event(EventRecord(
             adw_id=self.adw_id, phase_id=self.phase_id, type="log",
@@ -137,3 +137,12 @@ class Console:
         self._emit(line, level="info" if ok else "error")
         if envelope.artifacts:
             self._emit(f"    [dim]artifacts: {escape(_clip(', '.join(envelope.artifacts)))}[/dim]")
+
+
+def _safe_text(markup: str) -> Text:
+    try:
+        text = Text.from_markup(markup)
+    except MarkupError:
+        return Text(sanitize_text(markup))
+    sanitized = sanitize_text(text.plain)
+    return text if sanitized == text.plain else Text(sanitized)

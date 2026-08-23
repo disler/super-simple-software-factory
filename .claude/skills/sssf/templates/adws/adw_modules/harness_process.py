@@ -76,8 +76,10 @@ def run_jsonl_process(
         returncode = process.wait()
     finally:
         _finish_process(process)
-        stderr_text = _persist_sanitized_stderr(temporary_stderr, spec.stderr_output_path)
-        _notify_exit(process, on_exit)
+        try:
+            stderr_text = _persist_sanitized_stderr(temporary_stderr, spec.stderr_output_path)
+        finally:
+            _notify_exit(process, on_exit)
     return ProcessOutcome(returncode=returncode if returncode is not None else -1,
                           stderr_tail=stderr_text[-800:])
 

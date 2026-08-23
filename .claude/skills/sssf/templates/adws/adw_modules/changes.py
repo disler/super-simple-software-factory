@@ -15,8 +15,12 @@ measured against.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from . import git_helper
 from .data_types import BaseRef, ChangeCapture, ChangeSet, ChangesOutput
+from .diagnostics import sanitize_text
 
 DIFF_FILENAME = "changes.diff"
 
@@ -71,7 +75,7 @@ def capture(run, params: ChangeCapture) -> ChangeSet:
     untracked_block = ("\n".join(f"  {f}" for f in untracked) if untracked
                        else "  (none)")
     diff_path = run.context_handoff_dir / DIFF_FILENAME
-    diff_path.write_text(
+    _write_diff_artifact(diff_path,
         f"# changes since {base.label} @ {git_helper.short_sha(base.commit)}\n"
         f"# {base.reason}\n"
         f"# +{insertions} -{deletions} across {len(files)} tracked file(s)\n\n"
@@ -82,6 +86,12 @@ def capture(run, params: ChangeCapture) -> ChangeSet:
     return ChangeSet(base=base, files=files, untracked=untracked,
                      insertions=insertions, deletions=deletions, stat=stat,
                      diff_path=str(diff_path), truncated=truncated)
+
+
+def _write_diff_artifact(path: Path, content: str) -> None:
+    """Persist a restricted, redacted diff artifact for later inspection."""
+    path.write_text(sanitize_text(content))
+    os.chmod(path, 0o600)
 
 
 def as_envelope(changes: ChangeSet, notes: str = "") -> ChangesOutput:
