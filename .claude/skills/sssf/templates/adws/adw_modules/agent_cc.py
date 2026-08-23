@@ -19,6 +19,7 @@ from .harness_types import (HarnessConfigError, HarnessEvent, HarnessName,
                             HarnessProcessError, HarnessProfile, HarnessProtocolError,
                             HarnessRequest, HarnessResult, ProcessCallback, UsageBreakdown,
                             validate_session_id)
+from .diagnostics import sanitize_diagnostic
 from .utils import now_iso, operator_env
 
 CLAUDE_PATH = os.environ.get("CLAUDE_PATH", "claude")
@@ -211,13 +212,18 @@ def _final_result_text(event: Mapping[str, object]) -> str:
 
 
 def _is_success_result(event: Mapping[str, object]) -> bool:
+    terminal_state = event.get("terminal_reason")
+    api_error_status = event.get("api_error_status")
     return (event.get("is_error") is False and event.get("subtype") == "success"
-            and event.get("terminal_reason") == "completed")
+            and terminal_state == "completed" and api_error_status is None)
 
 
 def _result_failure(event: Mapping[str, object]) -> str:
-    return (f"is_error={event.get('is_error')!r}, subtype={event.get('subtype')!r}, "
-            f"terminal_reason={event.get('terminal_reason')!r}")
+    api_error_status = sanitize_diagnostic(event.get("api_error_status"))
+    subtype = event.get("subtype")
+    return (f"is_error={event.get('is_error')!r}, subtype={subtype!r}, "
+            f"terminal_reason={event.get('terminal_reason')!r}, "
+            f"api_error_status={api_error_status!r}")
 
 
 def _set_usage(usage: UsageBreakdown, raw_usage: Mapping[str, object],
@@ -243,7 +249,9 @@ def _set_context_metrics(result: HarnessResult, event: Mapping[str, object]) -> 
 
 def _single_model_usage(value: object) -> dict[str, object]:
     entries = [_object_map(item) for item in _object_map(value).values()]
-    return entries[0] if len(entries) == 1 else {}
+    if len(entries) != 1:
+        return {}
+    return entries[0]
 
 
 def _model_usage_occupancy(usage: Mapping[str, object]) -> int:

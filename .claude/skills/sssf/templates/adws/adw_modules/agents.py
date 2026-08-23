@@ -10,6 +10,7 @@ disposes.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
@@ -52,6 +53,14 @@ class AgentExecution:
     request: HarnessRequest
     latest: HarnessResult | None = None
     spent: UsageBreakdown = field(default_factory=UsageBreakdown)
+
+
+@dataclass(frozen=True)
+class _ParseRetryState:
+    run: "Run"
+    phase: Phase
+    call: AgentCall
+    send: Callable[[str], HarnessResult]
 
 
 # ── config ───────────────────────────────────────────────────────────────────
@@ -352,7 +361,7 @@ def _trace_agent_end(execution: AgentExecution, context: HarnessResult) -> None:
 
 # ── internals ────────────────────────────────────────────────────────────────
 
-def _as_report(result) -> GateReport:
+def _as_report(result: GateReport | list[str] | None) -> GateReport:
     """Accept a GateReport, or a legacy gate that returned a violations list."""
     if isinstance(result, GateReport):
         return result
@@ -420,7 +429,7 @@ def _event_forwarder(run: "Run", phase: Phase,
     return forward
 
 
-def _extract_json(text: str) -> dict:
+def _extract_json(text: str) -> dict[str, object]:
     candidate = text
     if "```" in text:
         for block in text.split("```")[1::2]:
@@ -431,29 +440,45 @@ def _extract_json(text: str) -> dict:
     start, end = candidate.find("{"), candidate.rfind("}")
     if start == -1 or end <= start:
         raise ValueError("no JSON object found in the response")
-    return json.loads(candidate[start:end + 1])
+    parsed = json.loads(candidate[start:end + 1])
+    if not isinstance(parsed, Mapping):
+        actual = type(parsed).__name__
+        raise ValueError(f"response JSON type {actual!r}; expected an object mapping")
+    return {str(key): value for key, value in parsed.items()}
 
 
-def _parse_with_retries(run, phase: Phase, call: AgentCall, result, send):
+def _parse_with_retries(run: "Run", phase: Phase, call: AgentCall,
+                        result: HarnessResult,
+                        send: Callable[[str], HarnessResult]) -> tuple[EnvelopeBase, int]:
     """Parse the final response; on failure, continue the same session (bounded)."""
+    retry_state = _ParseRetryState(run, phase, call, send)
     for attempt in range(1, JSON_FIX_ATTEMPTS + 2):
         try:
             payload = _extract_json(result.text)
             return call.output_type.model_validate(payload), attempt
         except Exception as error:
-            _persist_envelope(run, phase, phase.params.owner, call, None, attempt,
-                              valid=False, raw=result.text)
-            if attempt > JSON_FIX_ATTEMPTS:
-                raise RuntimeError(
-                    f"{phase.params.owner} never produced valid "
-                    f"{call.output_type.__name__} JSON: {error}") from error
-            run.console.retry(phase.params.owner, attempt, JSON_FIX_ATTEMPTS,
-                              f"invalid {call.output_type.__name__} JSON: {error}")
-            fields = ", ".join(call.output_type.model_fields.keys())
-            result = send(
-                f"Your response was not valid JSON for the required structure "
-                f"({error}). Respond again with ONLY a JSON object with these "
-                f"fields: {fields}. No prose, no code fences.")
+            result = _retry_invalid_response(retry_state, result, attempt, error)
+    raise AssertionError("JSON retry loop ended without a result")
+
+
+def _retry_invalid_response(state: _ParseRetryState, result: HarnessResult,
+                            attempt: int, error: Exception) -> HarnessResult:
+    _persist_envelope(state.run, state.phase, state.phase.params.owner, state.call, None,
+                      attempt, valid=False, raw=result.text)
+    if attempt > JSON_FIX_ATTEMPTS:
+        output_name = state.call.output_type.__name__
+        message = f"{state.phase.params.owner} never produced valid {output_name} JSON: {error}"
+        raise RuntimeError(message) from error
+    state.run.console.retry(state.phase.params.owner, attempt, JSON_FIX_ATTEMPTS,
+                            f"invalid {state.call.output_type.__name__} JSON: {error}")
+    fields = ", ".join(state.call.output_type.model_fields.keys())
+    return state.send(_json_correction(error, fields))
+
+
+def _json_correction(error: Exception, fields: str) -> str:
+    return (f"Your response was not valid JSON for the required structure ({error}). "
+            f"Respond again with ONLY a JSON object with these fields: {fields}. "
+            "No prose, no code fences.")
 
 
 def _persist_envelope(run: "Run", phase: Phase, agent_name: str, call: AgentCall,

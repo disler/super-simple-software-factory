@@ -121,7 +121,9 @@ def _set_usage(usage: UsageBreakdown, source: Mapping[str, object]) -> None:
 
 
 def _cache_write_tokens(source: Mapping[str, object]) -> int:
-    value = source.get("cache_write_input_tokens", source.get("cache_write_tokens"))
+    value = source.get("cache_write_input_tokens")
+    if value is None:
+        value = source.get("cache_write_tokens")
     return _int_value(value)
 
 
