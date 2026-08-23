@@ -164,6 +164,7 @@ export interface AgentSession {
 /** Parsed `agent_start` payload — the live source of a lane's label and color. */
 export interface AgentStartPayload {
   model?: string;
+  effort?: string;
   thinking?: string;
   session_id?: string;
   color?: string;

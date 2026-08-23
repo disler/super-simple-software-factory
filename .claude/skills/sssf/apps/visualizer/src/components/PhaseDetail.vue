@@ -403,11 +403,11 @@ function togglePanel(id: string) {
                 {{ modelName(agentConfig.model) }}
               </span>
             </div>
-            <div v-if="agentConfig.thinking" class="cfg-row">
-              <span class="cfg-k">thinking</span>
+            <div v-if="agentConfig.effort ?? agentConfig.thinking" class="cfg-row">
+              <span class="cfg-k">effort</span>
               <span class="cfg-chip">
                 <Brain class="cfg-icon" :size="18" :stroke-width="2" />
-                {{ agentConfig.thinking }}
+                {{ agentConfig.effort ?? agentConfig.thinking }}
               </span>
             </div>
             <div v-if="agentConfig.tools !== undefined" class="cfg-row">

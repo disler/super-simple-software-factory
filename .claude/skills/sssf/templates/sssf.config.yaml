@@ -1,22 +1,30 @@
 # sssf.config.yaml — the factory's agent roster. One agent, one prompt, one purpose.
-# v1 runs the Pi coding agent only; coding_agent: claude_code arrives in v2.
+# Pi is the active starter default. Set `coding_agent` per agent to use another
+# installed harness. `effort` is preferred; `thinking` remains a legacy alias.
+# Portable capabilities work across Pi, Claude Code, and Codex:
+# read | search | shell | write | edit
 defaults:
   coding_agent: pi
   model: google/gemini-3.6-flash   # provider/id — a bare pattern is ambiguous across providers
-  thinking: medium                 # off | minimal | low | medium | high | xhigh | max
-  harness_engineering: []          # pi extensions loaded into the harness (-e)
+  effort: medium                   # off | minimal | low | medium | high | xhigh | max
+  harness_engineering: []          # Pi-only extensions loaded into the harness (-e)
+  # Claude Code example (portable capabilities only; no harness_engineering):
+  # coding_agent: claude_code
+  # model: anthropic/claude-sonnet-4-5
+  # effort: high
+  # Codex example (use either the inspection or mutation profile):
+  # coding_agent: codex
+  # model: openai/gpt-5.6-terra
+  # effort: high
   # Roster-wide allowlist; any agent may override with its own list.
-  # NOTE: --tools filters extension and custom tools too, not just builtins. An agent
-  # whose harness_engineering extension registers a tool MUST name that tool in its own
-  # tools list — otherwise the extension loads and its tool is silently filtered out.
+  # Pi also accepts legacy names: bash -> shell; grep/find/ls -> search.
+  # A Pi-only harness_engineering extension must name its custom tools here too.
   tools:
     - read                         # read file contents
-    - bash                         # execute bash commands
+    - shell                        # execute shell commands
     - edit                         # find/replace edits
     - write                        # create/overwrite files
-    - grep                         # search file contents  (pi default: OFF)
-    - find                         # find files by glob     (pi default: OFF)
-    - ls                           # list directories       (pi default: OFF)
+    - search                       # search file contents and paths
   # Off-limits to every agent that does not name them in its own `writes`.
   # `tools` alone cannot protect these: bash runs `git checkout`, and write
   # reaches any path. An agent must not be able to edit the machinery that
@@ -39,24 +47,22 @@ observability:
 agents:
   - name: planner
     model: fireworks/accounts/fireworks/models/kimi-k3
-    thinking: high
+    effort: high
     color: "#a78bfa"                 # optional hex — the agent's lane color in the visualizer
     purpose: Turn a request into a plan the builder can implement without asking questions.
     prompt_engineering:
       system: adws/adw_data/prompt_engineering/planner/system.md
       user: adws/adw_data/prompt_engineering/planner/user.md
     harness_engineering:
-      - adws/adw_data/harness_engineering/subagents.ts    # registers the four subagent_* tools below
+      - adws/adw_data/harness_engineering/subagents.ts    # Pi-only; registers the four subagent_* tools below
     writes:                        # the plan is the only thing it may leave in the repo
       - specs/
     tools:                         # full recon + write for plan.md; no edit — the planner never touches repo files
       - read
-      - grep
-      - find
-      - ls
-      - bash
+      - search
+      - shell
       - write
-      - subagent_create            # extension tools MUST be named here or they are filtered out
+      - subagent_create            # Pi-only extension tools MUST be named here or they are filtered out
       - subagent_continue
       - subagent_list
       - subagent_remove
@@ -71,10 +77,8 @@ agents:
     # touch defaults.protected_files — the builder does not get to edit its own grader.
     tools:                         # the only agent that mutates the repo — everything on
       - read
-      - grep
-      - find
-      - ls
-      - bash
+      - search
+      - shell
       - edit
       - write
 
@@ -85,17 +89,15 @@ agents:
       system: adws/adw_data/prompt_engineering/scout/system.md
       user: adws/adw_data/prompt_engineering/scout/user.md
     harness_engineering:
-      - adws/adw_data/harness_engineering/subagents.ts    # registers the four subagent_* tools below
+      - adws/adw_data/harness_engineering/subagents.ts    # Pi-only; registers the four subagent_* tools below
     writes: []                     # read-only, and now actually read-only: its findings
                                    # go to context_handoff/, which is runtime, not the repo
     tools:                         # search-heavy recon; write only so scout_findings.md lands without a bash heredoc
       - read
-      - grep
-      - find
-      - ls
-      - bash
+      - search
+      - shell
       - write
-      - subagent_create            # extension tools MUST be named here or they are filtered out
+      - subagent_create            # Pi-only extension tools MUST be named here or they are filtered out
       - subagent_continue
       - subagent_list
       - subagent_remove
@@ -105,7 +107,7 @@ agents:
 
   - name: reviewer
     model: openai/gpt-5.6-terra
-    thinking: high
+    effort: high
     color: "#fb7185"
     purpose: Confirm that what was built is what was asked for; change nothing.
     prompt_engineering:
@@ -115,10 +117,8 @@ agents:
                                    # claim the tool list only implied, now enforced
     tools:                         # full read surface; write only for review.md, no edit
       - read
-      - grep
-      - find
-      - ls
-      - bash
+      - search
+      - shell
       - write
 
   - name: documenter
@@ -135,9 +135,7 @@ agents:
       - "*.md"
     tools:                         # reads the diff and the code; writes/edits documentation only
       - read
-      - grep
-      - find
-      - ls
-      - bash
+      - search
+      - shell
       - write
       - edit
