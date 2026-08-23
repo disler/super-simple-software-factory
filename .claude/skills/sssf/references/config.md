@@ -23,7 +23,7 @@ defaults:
 agents:
   - name: planner
     coding_agent: claude_code
-    model: anthropic/claude-opus-5
+    model: opus
     effort: high
     purpose: Turn a request into a plan.
     prompt_engineering:
@@ -32,7 +32,7 @@ agents:
 
   - name: builder
     coding_agent: codex
-    model: openai/gpt-5.6-terra
+    model: gpt-5.6-terra
     effort: high
     purpose: Implement the approved plan.
     prompt_engineering:
@@ -41,7 +41,7 @@ agents:
 
   - name: reviewer
     coding_agent: codex
-    model: openai/gpt-5.6-sol
+    model: gpt-5.6-sol
     effort: xhigh
     writes: []
     tools: [read, search, shell]
@@ -51,7 +51,7 @@ agents:
       user: adws/adw_data/prompt_engineering/reviewer/user.md
 ```
 
-Every model string is passed to the selected harness. For Pi, use an explicit `provider/model-id`, because its catalog can make a bare model id ambiguous. The other harnesses receive the configured string through their native CLI model option.
+Every model string belongs to its selected harness and is passed through unchanged. Pi owns provider-qualified identifiers such as `google/gemini-3.6-flash`; use `provider/model-id` there because its catalog can make a bare ID ambiguous. Claude Code and Codex own their native CLI identifiers, so use `opus`, `gpt-5.6-terra`, and `gpt-5.6-sol` without provider prefixes in mixed rosters.
 
 ## Fields and inheritance
 

@@ -38,7 +38,7 @@ adws/adw_sssf_config/sssf.config.yaml
     planner     fireworks/accounts/fireworks/models/kimi-k3
     builder     google/gemini-3.6-flash (inherited)
 adws/adw_sssf_config/sssf.frontier.config.yaml
-    planner     anthropic/claude-opus-5
+    planner     opus
 ```
 
 Read those from disk every time. Rosters are the engineer's to add, rename, and retune, so a name you remember from a doc is a guess.

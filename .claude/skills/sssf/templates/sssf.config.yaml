@@ -8,14 +8,17 @@ defaults:
   model: google/gemini-3.6-flash   # provider/id — a bare pattern is ambiguous across providers
   effort: medium                   # off | minimal | low | medium | high | xhigh | max
   harness_engineering: []          # Pi-specific extensions loaded into the harness (-e)
-  # Claude Code example (portable capabilities only; no harness_engineering):
+  # Claude Code example (native CLI model ID; portable capabilities only):
   # coding_agent: claude_code
-  # model: anthropic/claude-sonnet-4-5
+  # model: opus
   # effort: high
-  # Codex example (use either the inspection or mutation profile):
+  # Codex examples (native CLI model IDs; use an exact Codex tool profile):
   # coding_agent: codex
-  # model: openai/gpt-5.6-terra
+  # model: gpt-5.6-terra
   # effort: high
+  # coding_agent: codex
+  # model: gpt-5.6-sol
+  # effort: xhigh
   # Roster-wide allowlist; any agent may override with its own list.
   # The shared resolver accepts legacy names: bash -> shell; grep/find/ls -> search.
   # Codex still requires the normalized inspection or mutation capability set.

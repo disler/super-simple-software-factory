@@ -111,20 +111,26 @@ def _file_changes(value: object) -> list[dict[str, object]]:
 
 
 def _set_usage(usage: UsageBreakdown, source: Mapping[str, object]) -> None:
-    usage.input_tokens = _int_value(source.get("input_tokens"))
+    raw_input = _int_value(source.get("input_tokens"))
     usage.output_tokens = _int_value(source.get("output_tokens"))
     usage.cache_read_tokens = _int_value(source.get("cached_input_tokens"))
-    usage.cache_write_tokens = _int_value(source.get("cache_write_tokens"))
+    usage.cache_write_tokens = _cache_write_tokens(source)
     usage.reasoning_tokens = _int_value(source.get("reasoning_output_tokens"))
+    usage.input_tokens = max(raw_input - usage.cache_read_tokens - usage.cache_write_tokens, 0)
     usage.total_tokens = _usage_total(usage, source)
+
+
+def _cache_write_tokens(source: Mapping[str, object]) -> int:
+    value = source.get("cache_write_input_tokens", source.get("cache_write_tokens"))
+    return _int_value(value)
 
 
 def _usage_total(usage: UsageBreakdown, source: Mapping[str, object]) -> int:
     reported = _int_value(source.get("total_tokens"))
     if reported:
         return reported
-    return sum((usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
-                usage.cache_write_tokens))
+    raw_input = _int_value(source.get("input_tokens"))
+    return raw_input + usage.output_tokens
 
 
 class CodexEventParser:

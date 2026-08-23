@@ -8,11 +8,11 @@ Edit the agent's entry in place:
 
 ```yaml
   - name: builder
-    model: google/gemini-3.6-flash   # ALWAYS provider/model-id
+    model: google/gemini-3.6-flash   # Pi uses provider/model-id
     effort: high                     # was medium; `thinking` remains a legacy alias
 ```
 
-Write the model as `provider/model-id`, never a bare id. The same model is usually carried by several providers, and an ambiguous pattern raises in `agents.validate()` — grounding every agent that inherits it. See `references/config.md`.
+Model identifiers belong to their selected CLI. Pi needs `provider/model-id`, because a bare Pi model may be ambiguous in its catalog. Claude Code and Codex use native IDs such as `opus`, `gpt-5.6-terra`, and `gpt-5.6-sol` without provider prefixes. See `references/config.md`.
 
 When both `effort` and `thinking` are set, they must match or validation fails. Native effort sets differ: Pi accepts `off | minimal | low | medium | high | xhigh | max`; Claude Code accepts `low | medium | high | xhigh | max | ultracode`; Codex accepts `minimal | low | medium | high | xhigh`. Use `low`, `medium`, `high`, or `xhigh` for a mixed roster.
 

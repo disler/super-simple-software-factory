@@ -344,6 +344,10 @@ class PiEventParser:
         self._tools = ToolCallTracker()
 
     def observe(self, event: dict[str, object]) -> None:
+        """Record one Pi protocol event and forward completed tool calls.
+
+        Example: ``parser.observe({"type": "message_end"})`` records its turn.
+        """
         self._observe_assistant_message(event)
         tool_event = self._tools.observe(event)
         if tool_event and self._on_event:
@@ -439,7 +443,9 @@ def _pi_command(request: HarnessRequest, provider: str, model_id: str,
     command = [PI_PATH, "-p", "--mode", "json", "--provider", provider, "--model", model_id,
                "--thinking", request.profile.effort, "--session-id", session_id,
                "--session-dir", request.runtime_dir, "--system-prompt", request.system_prompt]
-    if capabilities.native_tools:
+    # Omitting --tools deliberately preserves Pi's built-ins and tools supplied
+    # by loaded extensions. ``tools: null`` is not an all-tools allowlist.
+    if request.profile.tools is not None and capabilities.native_tools:
         command.extend(["--tools", ",".join(capabilities.native_tools)])
     for extension in request.profile.extensions:
         command.extend(["-e", extension])
@@ -448,7 +454,7 @@ def _pi_command(request: HarnessRequest, provider: str, model_id: str,
 
 
 def _require_usable_result(result: HarnessResult, outcome: ProcessOutcome) -> None:
-    if result.returncode == 0 or result.text:
+    if result.returncode == 0:
         return
     stderr_tail = outcome.stderr_tail.strip()
     value = f"{PI_PATH} exited {result.returncode}: {stderr_tail}"

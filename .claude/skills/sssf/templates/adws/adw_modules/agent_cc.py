@@ -16,8 +16,8 @@ from .harness_capabilities import resolve_capabilities
 from .harness_process import (ProcessOutcome, ProcessSpec, ensure_executable,
                               require_effort, run_jsonl_process)
 from .harness_types import (HarnessConfigError, HarnessEvent, HarnessName,
-                            HarnessProcessError, HarnessProfile, HarnessRequest,
-                            HarnessResult, ProcessCallback, UsageBreakdown,
+                            HarnessProcessError, HarnessProfile, HarnessProtocolError,
+                            HarnessRequest, HarnessResult, ProcessCallback, UsageBreakdown,
                             validate_session_id)
 from .utils import now_iso, operator_env
 
@@ -169,6 +169,9 @@ class ClaudeEventParser:
         self._result = result
         self._on_event = on_event
         self._tools = ClaudeToolTracker()
+        self.result_events = 0
+        self.has_success_result = False
+        self.result_failure = ""
 
     def observe(self, event: dict[str, object]) -> None:
         """Process one Claude stream event.
@@ -192,14 +195,29 @@ class ClaudeEventParser:
             self._result.session_id = validate_session_id("claude_code", session_id)
 
     def _record_result(self, event: Mapping[str, object]) -> None:
+        self.result_events += 1
+        self.has_success_result = _is_success_result(event)
+        if not self.has_success_result:
+            self.result_failure = _result_failure(event)
         self._result.text = (json.dumps(event["structured_output"], ensure_ascii=False)
                              if "structured_output" in event else _final_result_text(event))
         _set_usage(self._result.usage, _object_map(event.get("usage")), event)
+        _set_context_metrics(self._result, event)
 
 
 def _final_result_text(event: Mapping[str, object]) -> str:
     result = event.get("result", "")
     return result if isinstance(result, str) else str(result)
+
+
+def _is_success_result(event: Mapping[str, object]) -> bool:
+    return (event.get("is_error") is False and event.get("subtype") == "success"
+            and event.get("terminal_reason") == "completed")
+
+
+def _result_failure(event: Mapping[str, object]) -> str:
+    return (f"is_error={event.get('is_error')!r}, subtype={event.get('subtype')!r}, "
+            f"terminal_reason={event.get('terminal_reason')!r}")
 
 
 def _set_usage(usage: UsageBreakdown, raw_usage: Mapping[str, object],
@@ -208,9 +226,31 @@ def _set_usage(usage: UsageBreakdown, raw_usage: Mapping[str, object],
     usage.output_tokens = _usage_count(raw_usage, "output_tokens")
     usage.cache_read_tokens = _usage_count(raw_usage, "cache_read_input_tokens")
     usage.cache_write_tokens = _usage_count(raw_usage, "cache_creation_input_tokens")
+    details = _object_map(raw_usage.get("output_tokens_details"))
+    usage.reasoning_tokens = _usage_count(details, "thinking_tokens")
     usage.total_tokens = sum((usage.input_tokens, usage.output_tokens,
                               usage.cache_read_tokens, usage.cache_write_tokens))
     usage.total_cost = _usage_cost(result_event.get("total_cost_usd"))
+
+
+def _set_context_metrics(result: HarnessResult, event: Mapping[str, object]) -> None:
+    model_usage = _single_model_usage(event.get("modelUsage"))
+    if not model_usage:
+        return
+    result.context_window = _usage_count(model_usage, "contextWindow")
+    result.context_tokens = _model_usage_occupancy(model_usage)
+
+
+def _single_model_usage(value: object) -> dict[str, object]:
+    entries = [_object_map(item) for item in _object_map(value).values()]
+    return entries[0] if len(entries) == 1 else {}
+
+
+def _model_usage_occupancy(usage: Mapping[str, object]) -> int:
+    # Current-turn occupancy is the verified input, output, cache-read, and
+    # cache-write components reported for the one model that supplied its limit.
+    fields = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
+    return sum(_usage_count(usage, field) for field in fields)
 
 
 def _usage_count(usage: Mapping[str, object], field: str) -> int:
@@ -264,7 +304,7 @@ class ClaudeCodeAdapter:
         outcome = run_jsonl_process(_process_spec(request, requested_session), parser.observe,
                                     on_spawn, on_exit)
         result.returncode = outcome.returncode
-        _require_usable_result(result, outcome)
+        _require_usable_result(result, outcome, parser)
         return result
 
 
@@ -350,12 +390,19 @@ def _add_session_command(command: list[str], existing: str | None, created: str)
     command.extend(["--session-id", created])
 
 
-def _require_usable_result(result: HarnessResult, outcome: ProcessOutcome) -> None:
-    if result.returncode == 0 or result.text:
-        return
-    stderr_tail = outcome.stderr_tail.strip()
-    value = f"{CLAUDE_PATH} exited {result.returncode}: {stderr_tail}"
-    raise HarnessProcessError("claude_code", value, "exit code 0 or a final structured result")
+def _require_usable_result(result: HarnessResult, outcome: ProcessOutcome,
+                           parser: ClaudeEventParser) -> None:
+    if outcome.returncode != 0:
+        stderr_tail = outcome.stderr_tail.strip()
+        value = f"{CLAUDE_PATH} exited {outcome.returncode}: {stderr_tail}"
+        raise HarnessProcessError("claude_code", value, "exit code 0 with one successful result")
+    if parser.result_events != 1:
+        raise HarnessProtocolError("claude_code", parser.result_events, "exactly one result event")
+    if not parser.has_success_result:
+        raise HarnessProtocolError("claude_code", parser.result_failure,
+                                   "is_error=false, subtype='success', terminal_reason='completed'")
+    validate_session_id("claude_code", result.session_id)
+    return
 
 
 ADAPTER = ClaudeCodeAdapter()

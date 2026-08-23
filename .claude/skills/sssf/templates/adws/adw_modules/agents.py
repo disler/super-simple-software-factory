@@ -57,6 +57,10 @@ class AgentExecution:
 # ── config ───────────────────────────────────────────────────────────────────
 
 def load_config(path: str = "adws/adw_sssf_config/sssf.config.yaml") -> SSSFConfig:
+    """Load a roster and apply defaults to each configured agent.
+
+    Example: ``load_config("roster.yaml")`` returns its normalized config.
+    """
     raw = yaml.safe_load(Path(path).read_text()) or {}
     defaults = raw.get("defaults", {}) or {}
     for agent in raw.get("agents", []) or []:
@@ -79,6 +83,10 @@ def _inherit_effort(agent: dict[str, object], defaults: dict[str, object]) -> No
 
 
 def resolve(cfg: SSSFConfig, name: str) -> AgentConfig:
+    """Return a named configured agent or stop with the available names.
+
+    Example: ``resolve(config, "builder")`` returns the builder profile.
+    """
     for agent in cfg.agents:
         if agent.name == name:
             return agent
@@ -399,6 +407,10 @@ def _event_forwarder(run: "Run", phase: Phase,
                      agent: AgentConfig) -> Callable[[HarnessEvent], None]:
     """Forward a completed normalized tool event into the current phase trace."""
     def forward(event: HarnessEvent) -> None:
+        """Persist one normalized harness tool event for the active agent.
+
+        Example: ``forward(HarnessEvent(name="Read"))`` records a tool call.
+        """
         run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
                                      type="tool_call", name=event.name,
                                      started_at=event.started_at, ended_at=event.ended_at,

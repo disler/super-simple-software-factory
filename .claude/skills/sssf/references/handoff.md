@@ -151,7 +151,7 @@ adws/adw_data/sessions/{adw_id}/
   "planner": {"session_id": "sssf-a1b2c3d4-planner-9f2e",
               "model": "google/gemini-3.6-flash", "coding_agent": "pi", "effort": "medium"},
   "builder": {"session_id": "sssf-a1b2c3d4-builder-71ac",
-              "model": "openai/gpt-5.6-terra", "coding_agent": "codex", "effort": "high"}
+              "model": "gpt-5.6-terra", "coding_agent": "codex", "effort": "high"}
 }
 ```
 

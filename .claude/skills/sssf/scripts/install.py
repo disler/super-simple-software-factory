@@ -150,32 +150,39 @@ def print_next_steps() -> None:
 
 
 def main() -> int:
+    """Stamp the factory and report usable harness CLIs.
+
+    Example: ``uv run install.py --force`` refreshes an installed factory.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--force", action="store_true", help="overwrite existing files")
     args = parser.parse_args()
+    stamped, skipped = _stamp_factory(Path.cwd(), args.force)
+    _print_installation(Path.cwd(), stamped, skipped)
+    return 0
 
-    root = Path.cwd()
-    stamped, skipped = [], []
 
-    stamp(TEMPLATES / "adws", root / "adws", args.force, stamped, skipped)
-    stamp(TEMPLATES / "prompt_engineering",
-          root / "adws" / "adw_data" / "prompt_engineering", args.force, stamped, skipped)
-    stamp(TEMPLATES / "harness_engineering",
-          root / "adws" / "adw_data" / "harness_engineering", args.force, stamped, skipped)
-    stamp(TEMPLATES / "sssf.config.yaml",
-          root / "adws" / "adw_sssf_config" / "sssf.config.yaml",
-          args.force, stamped, skipped)
-    stamp(TEMPLATES / "env.sample", root / ".env.sample", args.force, stamped, skipped)
+def _stamp_factory(root: Path, force: bool) -> tuple[list[str], list[str]]:
+    stamped: list[str] = []
+    skipped: list[str] = []
+    stamp(TEMPLATES / "adws", root / "adws", force, stamped, skipped)
+    stamp(TEMPLATES / "prompt_engineering", root / "adws" / "adw_data" / "prompt_engineering", force, stamped, skipped)
+    stamp(TEMPLATES / "harness_engineering", root / "adws" / "adw_data" / "harness_engineering", force, stamped, skipped)
+    stamp(TEMPLATES / "sssf.config.yaml", root / "adws" / "adw_sssf_config" / "sssf.config.yaml", force, stamped, skipped)
+    stamp(TEMPLATES / "env.sample", root / ".env.sample", force, stamped, skipped)
     # The recipes are part of the operating experience, and several cookbooks
     # plus the run banner tell you to use them, so a stamped repo has to have
     # them. Skipped like any other file if the repo already has a justfile.
-    stamp(TEMPLATES / "justfile", root / "justfile", args.force, stamped, skipped)
+    stamp(TEMPLATES / "justfile", root / "justfile", force, stamped, skipped)
     ensure_gitignore(root, stamped)
-    print_cli_diagnostics()
 
+    return stamped, skipped
+
+
+def _print_installation(root: Path, stamped: list[str], skipped: list[str]) -> None:
+    print_cli_diagnostics()
     print_install_report(root, stamped, skipped)
     print_next_steps()
-    return 0
 
 
 if __name__ == "__main__":

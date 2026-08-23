@@ -19,7 +19,7 @@ Writes `adws/adw_sssf_config/sssf.config.yaml` — creating the directory if nee
 ```yaml
 defaults:
   coding_agent: pi                 # pi | claude_code | codex; Pi is the starter default
-  model: google/gemini-3.6-flash   # ALWAYS provider/model-id — a bare id is ambiguous
+  model: google/gemini-3.6-flash   # Pi owns provider/model-id; native CLIs use native IDs below
   effort: medium                   # preferred spelling; `thinking` is a legacy alias
   harness_engineering: []          # Pi extension file paths only
   data_dir: adws/adw_data          # runtime home: {data_dir}/sessions/{adw_id}/{agent_name}/
@@ -31,7 +31,7 @@ observability:
 agents:
   - name: planner                  # ADW scripts name agents, never models
     coding_agent: claude_code
-    model: anthropic/claude-opus-5
+    model: opus
     effort: high
     color: "#a78bfa"               # optional hex — this agent's lane color in the visualizer
     purpose: Turn a request into a plan the builder can implement without asking questions.
@@ -41,7 +41,7 @@ agents:
 
   - name: scout
     coding_agent: codex
-    model: openai/gpt-5.6-terra
+    model: gpt-5.6-terra
     effort: high                   # unset keys fall through to defaults
     purpose: Find and report where things live; change nothing.
     prompt_engineering:
@@ -51,9 +51,18 @@ agents:
       - read
       - search
       - shell
+
+  - name: reviewer
+    coding_agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    purpose: Confirm that the implementation matches the request.
+    prompt_engineering:
+      system: adws/adw_data/prompt_engineering/reviewer/system.md
+      user: adws/adw_data/prompt_engineering/reviewer/user.md
 ```
 
-Every agent entry merges over `defaults`, so an entry only states what differs. Use portable tool names (`read`, `search`, `shell`, `write`, `edit`) across harnesses. The shared resolver also accepts `bash`, `grep`, `find`, and `ls`; Codex accepts them only when their normalized result is its inspection profile (`read`, `search`, `shell`) or mutation profile (all five). Pi additionally supports extension tools.
+Every agent entry merges over `defaults`, so an entry only states what differs. Model identifiers are owned by their selected CLI: Pi values are provider-qualified (`provider/model-id`), while Claude Code and Codex values are native IDs (`opus`, `gpt-5.6-terra`, `gpt-5.6-sol`). Use portable tool names (`read`, `search`, `shell`, `write`, `edit`) across harnesses. The shared resolver also accepts `bash`, `grep`, `find`, and `ls`; Codex accepts them only when their normalized result is its inspection profile (`read`, `search`, `shell`) or mutation profile (all five). Pi additionally supports extension tools.
 
 ## After generating
 

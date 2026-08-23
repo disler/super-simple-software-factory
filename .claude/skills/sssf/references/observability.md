@@ -33,7 +33,7 @@ Location comes from `observability.db` in `sssf.config.yaml`, default `adws/adw_
 
 **Context is occupancy, not spend.** `events.tokens` and `sessions.total_tokens` bill every turn, so they only grow — an agent that burned 100k tokens may be sitting in a 15k window. `context_tokens` is how full the window actually was when the agent stopped, which is what the visualizer's per-lane Context bar measures against `context_window`.
 
-Pi computes its context fields from the last valid assistant turn and its installed model catalog. Other adapters report context only when their stream exposes it. Missing context values remain NULL, and the lane draws no bar rather than a misleading empty one.
+Pi computes its context fields from the last valid assistant turn and its installed model catalog. Claude Code reports context only from a verified final result with one `modelUsage` entry: `context_tokens = inputTokens + outputTokens + cacheReadInputTokens + cacheCreationInputTokens`, and `context_window = modelUsage.*.contextWindow`. Other adapters report context only when their stream exposes it. Missing context values remain NULL, and the lane draws no bar rather than a misleading empty one.
 
 For Pi, an auto-compaction at the final act of a run can leave the recorded value pre-compaction; the tracer keeps the reported value rather than guessing.
 
@@ -121,7 +121,7 @@ agent_sessions (                   -- the queryable mirror of agent_map.json
   coding_agent  TEXT, model TEXT, color TEXT,   -- color: the config's lane swatch
   session_id    TEXT,
   context_tokens INTEGER,           -- window occupancy after the agent's last turn
-  context_window INTEGER,           -- the model's ceiling, from the pi registry
+  context_window INTEGER,           -- the selected harness's reported model ceiling
   created_at    TEXT, last_used_at TEXT,
   PRIMARY KEY (adw_id, agent)
 );

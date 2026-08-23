@@ -12,9 +12,6 @@ from __future__ import annotations
 from typing import Any, Callable, Literal, Optional, Self, Type
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
-
-from .harness_types import UsageBreakdown
-
 PhaseKind = Literal["engineer", "agent", "code"]
 PhaseStatus = Literal["queued", "running", "success", "fail"]
 
@@ -391,34 +388,3 @@ class EventRecord(BaseModel):
     # the tracer stamps started_at with the moment the event was recorded.
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
-
-
-# ── Pi coding agent interface ────────────────────────────────────────────────
-
-class PiRequest(BaseModel):
-    """Everything one non-interactive pi run needs."""
-
-    prompt: str
-    system_prompt: str
-    model: str                      # registry pattern, resolved to provider + id
-    thinking: str = "medium"
-    session_id: str                 # pi --session-id: creates or continues
-    session_dir: str
-    raw_output_path: str            # JSONL stream lands here
-    tools: Optional[list[str]] = None
-    extensions: list[str] = Field(default_factory=list)
-    cwd: str = "."                  # set from run.repo_root — the codebase root agents work in
-
-
-class PiResult(BaseModel):
-    text: str = ""
-    returncode: int = 0
-    session_id: str = ""
-    tokens: int = 0
-    cost: float = 0.0
-    usage: UsageBreakdown = Field(default_factory=UsageBreakdown)
-    # Context occupancy after the LAST turn — not a sum. `tokens` bills every
-    # turn; this is how full the window is right now, which is what the
-    # visualizer's context bar measures against `context_window`.
-    context_tokens: int = 0
-    context_window: int = 0         # 0 when the registry declares no ceiling
