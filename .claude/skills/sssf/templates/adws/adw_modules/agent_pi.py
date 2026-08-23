@@ -14,7 +14,7 @@ import subprocess
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from .data_types import PiRequest, PiResult
 from .utils import now_iso, operator_env
@@ -103,6 +103,41 @@ def _context_tokens(usage: dict) -> int:
         return int(total)
     return int(sum(usage.get(part) or 0
                    for part in ("input", "output", "cacheRead", "cacheWrite")))
+
+
+def _usage_count(usage: Mapping[str, object], field: str) -> int:
+    """Return a numeric token field, treating malformed values as zero."""
+    value = usage.get(field, 0)
+    return int(value) if isinstance(value, int | float) else 0
+
+
+def _usage_cost(cost: Mapping[str, object], field: str) -> float:
+    """Return a numeric cost field, treating malformed values as zero."""
+    value = cost.get(field, 0.0)
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
+def _add_usage(result: PiResult, usage: Mapping[str, object], total_tokens: int) -> None:
+    """Fold one pi `message_end` usage object into a normalized result.
+
+    `total_tokens` is passed in rather than re-derived: the caller already
+    computes it pi's way (totalTokens, else the sum of the parts).
+
+    Example: ``_add_usage(result, message_usage, turn_tokens)`` records one turn.
+    """
+    cost_value = usage.get("cost", {})
+    cost = cost_value if isinstance(cost_value, Mapping) else {}
+    result.usage.input_tokens += _usage_count(usage, "input")
+    result.usage.output_tokens += _usage_count(usage, "output")
+    result.usage.cache_read_tokens += _usage_count(usage, "cacheRead")
+    result.usage.cache_write_tokens += _usage_count(usage, "cacheWrite")
+    result.usage.reasoning_tokens += _usage_count(usage, "reasoning")
+    result.usage.total_tokens += total_tokens
+    result.usage.input_cost += _usage_cost(cost, "input")
+    result.usage.output_cost += _usage_cost(cost, "output")
+    result.usage.cache_read_cost += _usage_cost(cost, "cacheRead")
+    result.usage.cache_write_cost += _usage_cost(cost, "cacheWrite")
+    result.usage.total_cost += _usage_cost(cost, "total")
 
 
 def context_window(provider: str, model_id: str) -> int:
@@ -267,7 +302,7 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
                     usage = message.get("usage", {}) or {}
                     turn = _context_tokens(usage)
                     result.tokens += turn
-                    result.usage.add_turn(usage, turn)
+                    _add_usage(result, usage, turn)
                     # Occupancy is read off the last VALID assistant turn, the
                     # way pi does it — an aborted or errored turn reports usage
                     # you can't trust, so it must not overwrite a good reading.

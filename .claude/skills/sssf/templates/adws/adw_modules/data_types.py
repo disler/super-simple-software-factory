@@ -9,9 +9,11 @@ that its final JSON response is parsed against. No untyped handoffs.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Literal, Optional, Type
+from typing import Any, Callable, Literal, Optional, Self, Type
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+
+from .harness_types import UsageBreakdown
 
 PhaseKind = Literal["engineer", "agent", "code"]
 PhaseStatus = Literal["queued", "running", "success", "fail"]
@@ -301,11 +303,35 @@ class PromptEngineering(BaseModel):
     user: str                       # path to user.md
 
 
-class AgentConfig(BaseModel):
+class EffortConfig(BaseModel):
+    """Normalize legacy thinking and preferred effort configuration aliases.
+
+    Example: ``EffortConfig(thinking="high").effort`` returns ``"high"``.
+    """
+
+    effort: str | None = None
+    thinking: str | None = None
+
+    @model_validator(mode="after")
+    def resolve_effort_alias(self) -> Self:
+        """Resolve matching effort aliases to one normalized value.
+
+        Example: ``AgentConfig(thinking="high", ...).effort`` is ``"high"``.
+        """
+        if self.effort and self.thinking and self.effort != self.thinking:
+            raise ValueError(
+                f"effort={self.effort!r} conflicts with thinking={self.thinking!r}; expected equal values"
+            )
+        resolved = self.effort or self.thinking or "medium"
+        self.effort = resolved
+        self.thinking = resolved
+        return self
+
+
+class AgentConfig(EffortConfig):
     name: str
-    coding_agent: Literal["pi", "claude_code"] = "pi"
+    coding_agent: Literal["pi", "claude_code", "codex"] = "pi"
     model: str = "google/gemini-3.6-flash"
-    thinking: str = "medium"        # off | minimal | low | medium | high | xhigh | max
     color: str = ""                 # hex swatch for this agent's lane in the UI
     purpose: str = ""
     prompt_engineering: PromptEngineering
@@ -322,10 +348,9 @@ class AgentConfig(BaseModel):
     writes: Optional[list[str]] = None
 
 
-class ConfigDefaults(BaseModel):
-    coding_agent: Literal["pi", "claude_code"] = "pi"
+class ConfigDefaults(EffortConfig):
+    coding_agent: Literal["pi", "claude_code", "codex"] = "pi"
     model: str = "google/gemini-3.6-flash"
-    thinking: str = "medium"
     color: str = ""
     harness_engineering: list[str] = Field(default_factory=list)
     tools: Optional[list[str]] = None    # roster-wide allowlist; None = all tools usable
@@ -383,54 +408,6 @@ class PiRequest(BaseModel):
     tools: Optional[list[str]] = None
     extensions: list[str] = Field(default_factory=list)
     cwd: str = "."                  # set from run.repo_root — the codebase root agents work in
-
-
-class UsageBreakdown(BaseModel):
-    """Tokens and the dollars they cost, per component, summed over a call.
-
-    Mirrors pi's `usage` shape one-for-one so the numbers reconcile with what
-    pi itself reports: `input` EXCLUDES cache reads, which bill at their own
-    (cheaper) rate — add them to learn the size of the prompt that was sent.
-    """
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    # Thinking tokens. NOT a fifth component: measured across every session on
-    # disk, reasoning is always <= output and the four components above always
-    # sum to totalTokens, so reasoning is the thinking SHARE of output, billed
-    # at the output rate. Report it nested under output, never added to it.
-    reasoning_tokens: int = 0
-    total_tokens: int = 0
-    input_cost: float = 0.0
-    output_cost: float = 0.0
-    cache_read_cost: float = 0.0
-    cache_write_cost: float = 0.0
-    total_cost: float = 0.0
-
-    def add_turn(self, usage: dict, total_tokens: int) -> None:
-        """Fold in one pi `message_end` usage object.
-
-        `total_tokens` is passed in rather than re-derived: the caller already
-        computes it pi's way (totalTokens, else the sum of the parts).
-        """
-        cost = usage.get("cost") or {}
-        self.input_tokens += usage.get("input") or 0
-        self.output_tokens += usage.get("output") or 0
-        self.cache_read_tokens += usage.get("cacheRead") or 0
-        self.cache_write_tokens += usage.get("cacheWrite") or 0
-        self.reasoning_tokens += usage.get("reasoning") or 0
-        self.total_tokens += total_tokens
-        self.input_cost += cost.get("input") or 0.0
-        self.output_cost += cost.get("output") or 0.0
-        self.cache_read_cost += cost.get("cacheRead") or 0.0
-        self.cache_write_cost += cost.get("cacheWrite") or 0.0
-        self.total_cost += cost.get("total") or 0.0
-
-    def merge(self, other: "UsageBreakdown") -> None:
-        """Add another call's usage — a phase that retries spends more than once."""
-        for field in self.model_fields:
-            setattr(self, field, getattr(self, field) + getattr(other, field))
 
 
 class PiResult(BaseModel):

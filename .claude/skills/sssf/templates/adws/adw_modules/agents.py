@@ -17,8 +17,8 @@ import yaml
 
 from . import agent_pi, permissions, prompts
 from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
-                         GateCheck, GateReport, Phase, PiRequest, SSSFConfig,
-                         UsageBreakdown)
+                         GateCheck, GateReport, Phase, PiRequest, SSSFConfig)
+from .harness_types import UsageBreakdown
 from .utils import new_id
 
 JSON_FIX_ATTEMPTS = 2      # continue-with-correction attempts for malformed JSON
@@ -34,11 +34,22 @@ def load_config(path: str = "adws/adw_sssf_config/sssf.config.yaml") -> SSSFConf
     raw = yaml.safe_load(Path(path).read_text()) or {}
     defaults = raw.get("defaults", {}) or {}
     for agent in raw.get("agents", []) or []:
-        for key in ("coding_agent", "model", "thinking", "color", "tools", "writes"):
+        _inherit_effort(agent, defaults)
+        for key in ("coding_agent", "model", "color", "tools", "writes"):
             if key in defaults:
                 agent.setdefault(key, defaults[key])
         agent.setdefault("harness_engineering", defaults.get("harness_engineering", []))
     return SSSFConfig(**raw)
+
+
+def _inherit_effort(agent: dict[str, object], defaults: dict[str, object]) -> None:
+    if "effort" in agent or "thinking" in agent:
+        return
+    if "effort" in defaults:
+        agent["effort"] = defaults["effort"]
+        return
+    if "thinking" in defaults:
+        agent["thinking"] = defaults["thinking"]
 
 
 def resolve(cfg: SSSFConfig, name: str) -> AgentConfig:
