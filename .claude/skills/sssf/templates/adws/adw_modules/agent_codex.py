@@ -18,6 +18,10 @@ from .harness_types import (HarnessConfigError, HarnessEvent, HarnessName,
 CODEX_PATH = os.environ.get("CODEX_PATH", "codex")
 CODEX_EFFORTS: frozenset[str] = frozenset({"minimal", "low", "medium", "high", "xhigh"})
 RESULT_SNIPPET_CHARS = 20_000
+MAPPING_SCHEMA_KEYWORDS = frozenset({"properties", "$defs", "definitions", "patternProperties",
+                                     "dependentSchemas"})
+SINGLE_SCHEMA_KEYWORDS = frozenset({"contains", "not", "if", "then", "else", "propertyNames"})
+LIST_SCHEMA_KEYWORDS = frozenset({"prefixItems", "allOf", "anyOf", "oneOf"})
 
 
 def _object_map(value: object) -> dict[str, object]:
@@ -233,31 +237,80 @@ def _write_schema(request: HarnessRequest) -> Path:
 
 def _normalize_output_schema(schema: dict[str, object]) -> dict[str, object]:
     """Copy a schema before adding strict structured-output constraints."""
-    normalized = _normalize_schema_object(schema)
+    normalized = _normalize_schema_node(schema)
     return normalized
 
 
-def _normalize_schema_value(value: object) -> object:
+def _copy_json_value(value: object) -> object:
     if isinstance(value, dict):
-        copied = {str(key): item for key, item in value.items()}
-        return _normalize_schema_object(copied)
+        return {str(key): _copy_json_value(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_normalize_schema_value(item) for item in value]
+        return [_copy_json_value(item) for item in value]
     return value
 
 
-def _normalize_schema_object(schema: Mapping[str, object]) -> dict[str, object]:
-    normalized = {key: _normalize_schema_value(value) for key, value in schema.items()}
-    _normalize_object_properties(normalized)
+def _normalize_schema_node(schema: Mapping[str, object]) -> dict[str, object]:
+    normalized = {key: _copy_json_value(value) for key, value in schema.items()}
+    _normalize_mapping_schemas(normalized)
+    _normalize_single_schemas(normalized)
+    _normalize_list_schemas(normalized)
+    _normalize_items_schema(normalized)
+    _normalize_object_schema(normalized)
     return normalized
 
 
-def _normalize_object_properties(schema: dict[str, object]) -> None:
+def _normalize_mapping_schemas(schema: dict[str, object]) -> None:
+    for keyword in MAPPING_SCHEMA_KEYWORDS:
+        values = schema.get(keyword)
+        if isinstance(values, dict):
+            schema[keyword] = {str(key): _copy_or_normalize_schema(value)
+                               for key, value in values.items()}
+
+
+def _normalize_single_schemas(schema: dict[str, object]) -> None:
+    for keyword in SINGLE_SCHEMA_KEYWORDS:
+        normalized = _normalize_schema_value(schema.get(keyword))
+        if normalized is not None:
+            schema[keyword] = normalized
+
+
+def _normalize_list_schemas(schema: dict[str, object]) -> None:
+    for keyword in LIST_SCHEMA_KEYWORDS:
+        values = schema.get(keyword)
+        if isinstance(values, list):
+            schema[keyword] = [_copy_or_normalize_schema(value) for value in values]
+
+
+def _normalize_items_schema(schema: dict[str, object]) -> None:
+    items = schema.get("items")
+    if isinstance(items, list):
+        schema["items"] = [_copy_or_normalize_schema(value) for value in items]
+        return
+    normalized = _normalize_schema_value(items)
+    if normalized is not None:
+        schema["items"] = normalized
+
+
+def _normalize_schema_value(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    copied = {str(key): item for key, item in value.items()}
+    return _normalize_schema_node(copied)
+
+
+def _copy_or_normalize_schema(value: object) -> object:
+    normalized = _normalize_schema_value(value)
+    if normalized is not None:
+        return normalized
+    return _copy_json_value(value)
+
+
+def _normalize_object_schema(schema: dict[str, object]) -> None:
     properties = schema.get("properties")
-    if not isinstance(properties, dict):
+    if schema.get("type") != "object" and not isinstance(properties, dict):
         return
     schema["additionalProperties"] = False
-    schema["required"] = list(properties)
+    schema["required"] = list(properties) if isinstance(properties, dict) else []
 
 
 def _codex_command(request: HarnessRequest, schema_path: Path) -> list[str]:
