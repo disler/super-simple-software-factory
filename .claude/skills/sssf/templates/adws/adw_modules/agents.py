@@ -18,8 +18,8 @@ import yaml
 from . import agent_pi, permissions, prompts
 from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
                          GateCheck, GateReport, Phase, SSSFConfig)
-from .harness_types import (HarnessEvent, HarnessProfile, HarnessRequest,
-                            HarnessResult, UsageBreakdown)
+from .harness_types import (HarnessError, HarnessEvent, HarnessProfile,
+                            HarnessRequest, HarnessResult, UsageBreakdown)
 from .utils import new_id
 
 JSON_FIX_ATTEMPTS = 2      # continue-with-correction attempts for malformed JSON
@@ -77,10 +77,11 @@ def validate(cfg: SSSFConfig, required: list[str]) -> None:
                            ("user", agent.prompt_engineering.user)):
             if not Path(ref).is_file():
                 problems.append(f"agent {name!r}: {label} prompt not found: {ref}")
-        try:
-            agent_pi.resolve_model(agent.model)
-        except ValueError as e:
-            problems.append(f"agent {name!r}: {e}")
+        if agent.coding_agent == "pi":
+            try:
+                agent_pi.ADAPTER.validate_profile(_harness_profile(agent))
+            except (HarnessError, ValueError) as error:
+                problems.append(f"agent {name!r}: {error}")
     if problems:
         raise SystemExit("config validation failed:\n- " + "\n- ".join(problems))
 
