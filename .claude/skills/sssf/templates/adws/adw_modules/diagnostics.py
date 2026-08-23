@@ -12,7 +12,7 @@ SHORT_SECRET_LENGTH = 5
 SENSITIVE_ENV_KEY = re.compile(
     r"token|key|secret|password|passwd|auth|credential|cookie", re.I)
 RICH_TAG = re.compile(r"(\[/?[a-z][^\]]*\])", re.I)
-BARE_SCALAR = r"[^\s,;}\]\[<](?:[^\n,;}\]\[<]*[^\s,;}\]\[<])?"
+BARE_SCALAR = r"(?!\[REDACTED\])[^\s](?:[^\n]*[^\s])?"
 BEARER_VALUE = re.compile(rf"\bbearer\s+{BARE_SCALAR}", re.I)
 AUTHORIZATION = re.compile(
     r"\b(?P<prefix>authorization\s*[:=]\s*)(?:(?P<quote>['\"])(?:bearer\s+)?"
