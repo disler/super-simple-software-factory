@@ -17,8 +17,9 @@ import yaml
 
 from . import agent_pi, permissions, prompts
 from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
-                         GateCheck, GateReport, Phase, PiRequest, SSSFConfig)
-from .harness_types import UsageBreakdown
+                         GateCheck, GateReport, Phase, SSSFConfig)
+from .harness_types import (HarnessEvent, HarnessProfile, HarnessRequest,
+                            HarnessResult, UsageBreakdown)
 from .utils import new_id
 
 JSON_FIX_ATTEMPTS = 2      # continue-with-correction attempts for malformed JSON
@@ -117,32 +118,29 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
     # Parse retries and gate corrections re-enter the SAME pi session, so the
     # last send is the one whose context occupancy is current — while spend is
     # the opposite: every send costs, so usage accumulates across all of them.
-    latest: agent_pi.PiResult | None = None
+    latest: HarnessResult | None = None
     spent = UsageBreakdown()
 
-    def send(prompt_text: str) -> agent_pi.PiResult:
+    def send(prompt_text: str) -> HarnessResult:
         nonlocal latest
-        request = PiRequest(
+        request = HarnessRequest(
+            profile=_harness_profile(agent),
             prompt=prompt_text,
             system_prompt=system_text,
-            model=agent.model,
-            thinking=agent.thinking,
             session_id=session_id,
-            # absolute: these are read by the pi subprocess, which runs in repo_root
-            session_dir=str((agent_dir / "pi_sessions").resolve()),
+            runtime_dir=str((agent_dir / "pi_sessions").resolve()),
             raw_output_path=str((agent_dir / "raw_output.jsonl").resolve()),
-            tools=agent.tools,
-            extensions=agent.harness_engineering,
             cwd=str(run.repo_root),
+            output_schema=call.output_type.model_json_schema(),
         )
-        result = agent_pi.run(
+        result = agent_pi.ADAPTER.run(
             request,
             on_event=_event_forwarder(run, phase, agent.name),
             on_spawn=lambda pid: run.tracer.process_start(
                 run.adw_id, "agent", agent.name, pid,
                 f"{agent.coding_agent} {agent.name} {agent.model}"),
             on_exit=lambda pid: run.tracer.process_end(run.adw_id, pid))
-        run.add_usage(result.tokens, result.cost)
+        run.add_usage(result.usage.total_tokens, result.usage.total_cost)
         spent.merge(result.usage)
         latest = result
         return result
@@ -243,21 +241,19 @@ def _agent_session_id(run, agent: AgentConfig) -> str:
     return f"sssf-{run.adw_id}-{agent.name}-{new_id(4)}"
 
 
-def _event_forwarder(run, phase: Phase, agent_name: str):
-    """One tool_call event per real tool call, with its exact args and result."""
-    tracker = agent_pi.ToolCallTracker()
+def _harness_profile(agent: AgentConfig) -> HarnessProfile:
+    return HarnessProfile(harness=agent.coding_agent, model=agent.model,
+                          effort=agent.effort or "medium", tools=agent.tools,
+                          extensions=agent.harness_engineering, writes=agent.writes)
 
-    def forward(event: dict) -> None:
-        record = tracker.observe(event)
-        if record is None:
-            return
-        # The call's span rides the columns; duration_ms stays in the payload as
-        # pi's own authoritative number.
+
+def _event_forwarder(run, phase: Phase, agent_name: str):
+    """Forward a completed normalized tool event into the current phase trace."""
+    def forward(event: HarnessEvent) -> None:
         run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
-                                     type="tool_call", name=record.pop("label"),
-                                     started_at=record.pop("started_at", None),
-                                     ended_at=record.pop("ended_at", None),
-                                     payload={**record, "agent": agent_name}))
+                                     type="tool_call", name=event.name,
+                                     started_at=event.started_at, ended_at=event.ended_at,
+                                     payload={**event.payload, "agent": agent_name}))
     return forward
 
 

@@ -56,17 +56,16 @@ def run_jsonl_process(
     on_spawn: ProcessCallback | None = None,
     on_exit: ProcessCallback | None = None,
 ) -> ProcessOutcome:
-    """Stream one strict JSONL process while preserving stdout and stderr files.
-
-    Example: ``run_jsonl_process(spec, consume_event)`` forwards each JSON object.
-    """
+    """Stream JSONL while preserving output; e.g. ``run_jsonl_process(spec, callback)``."""
     _prepare_output_paths(spec)
+    stderr_offset = _stderr_offset(spec.stderr_output_path)
     process = _start_process(spec)
     try:
         _notify_spawn(process, on_spawn)
         _write_stdin(process, spec.stdin_text)
         _stream_stdout(process, spec, on_json)
-        return ProcessOutcome(returncode=process.wait(), stderr_tail=_stderr_tail(spec))
+        return ProcessOutcome(returncode=process.wait(),
+                              stderr_tail=_stderr_tail(spec.stderr_output_path, stderr_offset))
     finally:
         _finish_process(process)
         _notify_exit(process, on_exit)
@@ -80,7 +79,7 @@ def _prepare_output_paths(spec: ProcessSpec) -> None:
 
 
 def _start_process(spec: ProcessSpec) -> subprocess.Popen[str]:
-    stderr_file = Path(spec.stderr_output_path).open("a")
+    stderr_file = Path(spec.stderr_output_path).open("ab")
     try:
         process = subprocess.Popen(
             spec.command, stdin=subprocess.PIPE if spec.stdin_text is not None else subprocess.DEVNULL,
@@ -135,9 +134,16 @@ def _consume_line(line: str, executable: str, on_json: JsonEventCallback) -> Non
     raise HarnessProtocolError(executable, event, "a JSON object per stdout line")
 
 
-def _stderr_tail(spec: ProcessSpec) -> str:
+def _stderr_offset(output_path: str) -> int:
     try:
-        return Path(spec.stderr_output_path).read_text()[-800:]
+        return Path(output_path).stat().st_size
+    except OSError:
+        return 0
+
+
+def _stderr_tail(output_path: str, offset: int) -> str:
+    try:
+        return Path(output_path).read_bytes()[offset:][-800:].decode(errors="replace")
     except OSError:
         return ""
 
