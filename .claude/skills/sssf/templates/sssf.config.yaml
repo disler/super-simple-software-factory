@@ -17,7 +17,8 @@ defaults:
   # model: openai/gpt-5.6-terra
   # effort: high
   # Roster-wide allowlist; any agent may override with its own list.
-  # Pi also accepts legacy names: bash -> shell; grep/find/ls -> search.
+  # The shared resolver accepts legacy names: bash -> shell; grep/find/ls -> search.
+  # Codex still requires the normalized inspection or mutation capability set.
   # A Pi-specific harness_engineering extension must name its custom tools here too.
   tools:
     - read                         # read file contents
@@ -30,10 +31,10 @@ defaults:
   # reaches any path. An agent must not be able to edit the machinery that
   # decides whether its own work passed. Enforced in adw_modules/permissions.py.
   #
-  # `writes:` per agent says what it may change IN THE REPO. It never restricts
-  # the session runtime under data_dir — context_handoff/, envelopes, prompts,
-  # raw output. Every agent can always write its own report; `writes: []` means
-  # read-only with respect to the repo, not mute.
+  # `writes:` per agent says what it may change IN THE REPO. The orchestrator
+  # writes the session runtime under data_dir — envelopes, prompts, raw output.
+  # Native read-only Claude Code/Codex agents cannot create context_handoff/
+  # artifacts there; use structured output or a writable profile for artifacts.
   protected_files:
     - adws/adw_modules/
     - adws/adw_sssf_config/
@@ -90,8 +91,8 @@ agents:
       user: adws/adw_data/prompt_engineering/scout/user.md
     harness_engineering:
       - adws/adw_data/harness_engineering/subagents.ts    # Pi-specific; registers the four subagent_* tools below
-    writes: []                     # read-only, and now actually read-only: its findings
-                                   # go to context_handoff/, which is runtime, not the repo
+    writes: []                     # Pi's starter profile can write its ignored runtime.
+                                   # A native read-only profile must use structured output.
     tools:                         # search-heavy recon; write only so scout_findings.md lands without a bash heredoc
       - read
       - search

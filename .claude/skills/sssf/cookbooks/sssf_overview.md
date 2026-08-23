@@ -32,7 +32,7 @@ adws/
     │                                planner · builder · scout · reviewer · documenter
     ├── sessions/{adw_id}/                               gitignored runtime
     │   ├── agent_map.json       agent → coding-agent session_id + model
-    │   ├── context_handoff/     the one place agents write files for the agents that follow
+    │   ├── context_handoff/     orchestrator-created handoff directory; writable profiles may add files
     │   └── {agent}/{prompts/, raw_output.jsonl, envelope.json}
     └── sssf.db                  gitignored SQLite trace db the visualizer polls
 ```
@@ -51,7 +51,7 @@ Every ADW run is a sequence of **phases**, each one `with run.phase(PhaseParams(
 
 ## Envelopes
 
-Agents have exactly two output channels: reference files written into `context_handoff/`, and a **final valid-JSON response** parsed against the output type the call declared. Code persists it as `envelope.json` and injects it into the next agent's `user.md` via `{{previous_envelope}}`. Bad JSON is never a restart — the harness re-prompts the same selected-harness session, context intact, until it parses (bounded). See `references/handoff.md`.
+Agents always have a **final valid-JSON response** parsed against the output type the call declared. Writable profiles may also create reference files in `context_handoff/`. Code persists the response as `envelope.json` and injects it into the next agent's `user.md` via `{{previous_envelope}}`. Native read-only Claude Code and Codex profiles use the structured channel only, so phases requiring direct artifacts must select a writable profile. Bad JSON is never a restart — the harness re-prompts the same selected-harness session, context intact, until it parses (bounded). See `references/handoff.md`.
 
 **The output contract is a synced triad**: the type in `data_types.py` ↔ the `## Report` JSON example in the agent's `user.md` ↔ `output_type=` at the call site. Editing any one of the three means editing all three in the same change — drift between them taxes every call with correction retries.
 

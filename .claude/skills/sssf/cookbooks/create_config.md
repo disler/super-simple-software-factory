@@ -53,7 +53,7 @@ agents:
       - shell
 ```
 
-Every agent entry merges over `defaults`, so an entry only states what differs. Use portable tool names (`read`, `search`, `shell`, `write`, `edit`) across harnesses. Codex accepts only its inspection profile (`read`, `search`, `shell`) or mutation profile (all five); Pi additionally accepts `bash`, `grep`, `find`, and `ls` aliases plus extension tools.
+Every agent entry merges over `defaults`, so an entry only states what differs. Use portable tool names (`read`, `search`, `shell`, `write`, `edit`) across harnesses. The shared resolver also accepts `bash`, `grep`, `find`, and `ls`; Codex accepts them only when their normalized result is its inspection profile (`read`, `search`, `shell`) or mutation profile (all five). Pi additionally supports extension tools.
 
 ## After generating
 

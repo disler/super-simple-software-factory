@@ -4,12 +4,12 @@ The envelope schema, the two-channel output contract, and the session directory 
 
 ## Two output channels, exactly
 
-An agent may produce output in two ways and no others:
+The orchestrator always persists a final response, and an agent may additionally create a reference file when its harness profile can write the workspace:
 
 1. **Reference files** written into `context_handoff/` — plans, notes, artifacts for the agents that follow.
 2. **A final valid-JSON response** — the envelope, its direct response and nothing else.
 
-Code does the rest: parse the response against the output type the call declared, persist it as `envelope.json`, and inject it into the next agent's user prompt.
+Code does the rest: parse the response against the output type the call declared, persist it as `envelope.json`, and inject it into the next agent's user prompt. Native read-only Claude Code and Codex profiles cannot create `context_handoff/` files because that runtime is under the repository cwd; they retain the structured response channel. Use a writable profile when an ADW requires a direct artifact.
 
 ## Envelope schema
 
@@ -133,7 +133,7 @@ The `## Report` section shows the exact JSON shape of the declared output type �
 ```
 adws/adw_data/sessions/{adw_id}/
 ├── agent_map.json          agent name → coding-agent session_id + model
-├── context_handoff/        the ONE place agents write files for the agents that follow
+├── context_handoff/        orchestrator-created handoff directory; writable profiles may add files
 └── {agent_name}/
     ├── prompts/            exact prompts sent (system.md + user.md), saved before execution
     ├── pi_sessions/        Pi session state (Pi only)
@@ -142,7 +142,7 @@ adws/adw_data/sessions/{adw_id}/
     └── envelope.json       the final valid-JSON response — captured, validated, persisted by code
 ```
 
-`session.ensure(cfg, adw_id)` mints or joins the id and creates these dirs. One `context_handoff/` per session, shared by every agent — the single location for cross-agent files. Pi retains its historical `pi_sessions/` directory; the other harnesses use `harness_sessions/`.
+`session.ensure(cfg, adw_id)` mints or joins the id and creates these dirs. One `context_handoff/` per session is the shared location for cross-agent files when the producing profile can write it. The orchestrator still saves prompts, streams, and envelopes for every profile. Pi retains its historical `pi_sessions/` directory; the other harnesses use `harness_sessions/`.
 
 ## agent_map.json and resuming
 

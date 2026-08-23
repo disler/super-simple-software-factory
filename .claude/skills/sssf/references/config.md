@@ -84,7 +84,7 @@ For a roster meant to move between all three harnesses, use the intersection: `l
 
 ## Portable capabilities
 
-The portable names are `read`, `search`, `shell`, `write`, and `edit`. Pi additionally accepts legacy aliases: `bash` maps to `shell`, while `grep`, `find`, and `ls` map to `search`.
+The portable names are `read`, `search`, `shell`, `write`, and `edit`. The shared resolver also accepts legacy aliases on every harness: `bash` maps to `shell`, while `grep`, `find`, and `ls` map to `search`. Codex validates the resulting normalized set, so aliases are valid there only when they resolve to its inspection or mutation profile.
 
 | Harness | Accepted portable profiles |
 |---|---|
@@ -98,7 +98,7 @@ The portable names are `read`, `search`, `shell`, `write`, and `edit`. Pi additi
 
 Claude Code and Codex receive native sandbox controls. `writes: []` becomes a read-only native sandbox; otherwise they run with workspace-write access. Claude Code is configured to fail if its native sandbox is unavailable. Codex uses its native `read-only` or `workspace-write` sandbox mode.
 
-The Git change-set check runs for every harness, including Pi. It is after-the-fact protection of repository files, not a replacement for a native sandbox. All agents may still write their session runtime (`context_handoff/`, prompts, streams, and envelopes) under `data_dir`.
+The Git change-set check runs on every completed or failed execute path, including process, protocol, parsing, and gate failures. It is after-the-fact protection of repository files, not a replacement for a native sandbox. The orchestrator owns prompts, raw streams, and envelopes under `data_dir`; a writable harness profile may also write `context_handoff/` files there. Native read-only Claude Code and Codex profiles cannot create repository-local handoff artifacts, so use their structured output or select a writable profile when direct artifact files are required.
 
 ## Pi extensions
 

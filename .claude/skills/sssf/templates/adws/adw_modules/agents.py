@@ -10,8 +10,9 @@ disposes.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import yaml
 
@@ -19,15 +20,36 @@ from . import permissions, prompts
 from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
                          GateCheck, GateReport, Phase, SSSFConfig)
 from .harness_types import (HarnessError, HarnessEvent, HarnessProfile,
-                            HarnessName, HarnessRequest, HarnessResult,
+                            HarnessAdapter, HarnessName, HarnessRequest, HarnessResult,
                             UsageBreakdown)
 from .harness_registry import get_adapter
 
 JSON_FIX_ATTEMPTS = 2      # continue-with-correction attempts for malformed JSON
 
+if TYPE_CHECKING:
+    from .runner import Run
+
 
 class GateFailure(RuntimeError):
     pass
+
+
+@dataclass
+class AgentExecution:
+    """State shared by every send in one agent phase.
+
+    Example: ``_send(execution, "continue")`` retains its harness session.
+    """
+
+    run: "Run"
+    phase: Phase
+    agent: AgentConfig
+    adapter: HarnessAdapter
+    user_text: str
+    session_id: str | None
+    request: HarnessRequest
+    latest: HarnessResult | None = None
+    spent: UsageBreakdown = field(default_factory=UsageBreakdown)
 
 
 # ── config ───────────────────────────────────────────────────────────────────
@@ -88,147 +110,231 @@ def validate(cfg: SSSFConfig, required: list[str]) -> None:
 def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
     """One agent call: render prompts -> harness run -> typed parse -> gates -> envelope."""
     agent = resolve(run.cfg, phase.params.owner)
-    adapter = get_adapter(agent.coding_agent)
+    execution = _prepare_execution(run, phase, call, agent)
+    tree_before = permissions.snapshot(run)
+    try:
+        envelope, attempt = _run_exchange(execution, call)
+    except BaseException:
+        _enforce_permissions(execution, tree_before)
+        raise
+    touched = _enforce_permissions(execution, tree_before)
+    _trace_touched(execution, touched)
+    return _finish_execution(execution, call, envelope, attempt)
+
+
+def _prepare_execution(run: "Run", phase: Phase, call: AgentCall,
+                       agent: AgentConfig) -> AgentExecution:
     agent_dir = run.session_dir / agent.name
     agent_dir.mkdir(parents=True, exist_ok=True)
+    system_text, user_text = _render_prompts(run, call, agent, agent_dir)
+    adapter = get_adapter(agent.coding_agent)
+    session_id = _session_id(run, agent, adapter)
+    request = _base_request(run, call, agent, agent_dir, system_text)
+    execution = AgentExecution(run, phase, agent, adapter, user_text, session_id, request)
+    _trace_agent_start(execution)
+    return execution
 
-    variables = {
-        "prompt": call.prompt,
-        "previous_envelope": call.previous.model_dump_json(indent=2) if call.previous else "(none)",
-        "context_handoff_dir": str(run.context_handoff_dir),
-    }
+
+def _render_prompts(run: "Run", call: AgentCall, agent: AgentConfig,
+                    agent_dir: Path) -> tuple[str, str]:
+    variables = {"prompt": call.prompt,
+                 "previous_envelope": call.previous.model_dump_json(indent=2)
+                 if call.previous else "(none)",
+                 "context_handoff_dir": str(run.context_handoff_dir)}
     system_text = prompts.render(agent.prompt_engineering.system, variables)
     user_text = prompts.render(agent.prompt_engineering.user, variables)
     prompts.save(agent_dir / "prompts", "system.md", system_text)
     prompts.save(agent_dir / "prompts", "user.md", user_text)
+    return system_text, user_text
 
-    active_session_id = reusable_session(run.agent_map.get(agent.name), agent)
-    if active_session_id is None:
-        active_session_id = adapter.new_session_id(run.adw_id, agent.name)
-    run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
-                                 type="agent_start", name=agent.name,
-                                 payload={"model": agent.model, "effort": agent.effort,
-                                          "thinking": agent.thinking,
-                                          "color": agent.color,
-                                          "session_id": active_session_id,
-                                          "harness": agent.coding_agent,
-                                          "coding_agent": agent.coding_agent,
-                                          "purpose": agent.purpose,
-                                          "tools": agent.tools,  # None = all tools
-                                          "harness_engineering": agent.harness_engineering}))
-    run.console.agent_started(agent.name, agent.coding_agent, agent.model, active_session_id)
 
-    # Parse retries and gate corrections re-enter the SAME harness session, so the
-    # last send is the one whose context occupancy is current — while spend is
-    # the opposite: every send costs, so usage accumulates across all of them.
-    latest: HarnessResult | None = None
-    spent = UsageBreakdown()
-    base_request = HarnessRequest(
+def _session_id(run: "Run", agent: AgentConfig,
+                adapter: HarnessAdapter) -> str | None:
+    existing = reusable_session(run.agent_map.get(agent.name), agent)
+    if existing:
+        return existing
+    return adapter.new_session_id(run.adw_id, agent.name)
+
+
+def _base_request(run: "Run", call: AgentCall, agent: AgentConfig,
+                  agent_dir: Path, system_text: str) -> HarnessRequest:
+    return HarnessRequest(
         profile=_harness_profile(agent), prompt="", system_prompt=system_text,
         session_id=None, runtime_dir=_runtime_dir(agent_dir, agent.coding_agent),
         raw_output_path=str((agent_dir / "raw_output.jsonl").resolve()),
         cwd=str(run.repo_root), output_schema=call.output_type.model_json_schema(),
     )
 
-    def send(prompt_text: str) -> HarnessResult:
-        nonlocal active_session_id, latest
-        request = base_request.model_copy(update={"prompt": prompt_text,
-                                                  "session_id": active_session_id})
-        result = adapter.run(
-            request, on_event=_event_forwarder(run, phase, agent),
-            on_spawn=lambda pid: run.tracer.process_start(
-                run.adw_id, "agent", agent.name, pid,
-                f"{agent.coding_agent} {agent.name} {agent.model}"),
-            on_exit=lambda pid: run.tracer.process_end(run.adw_id, pid))
-        active_session_id = result.session_id
-        save_session(run, agent, active_session_id)
-        run.add_usage(result.usage.total_tokens, result.usage.total_cost)
-        spent.merge(result.usage)
-        latest = result
-        return result
 
-    # What the tree looked like before this agent got its hands on it. Every
-    # send in this phase — first prompt, JSON retries, gate corrections — is
-    # measured against this one baseline.
-    tree_before = permissions.snapshot(run)
+def _trace_agent_start(execution: AgentExecution) -> None:
+    agent, run, phase = execution.agent, execution.run, execution.phase
+    run.tracer.event(EventRecord(
+        adw_id=run.adw_id, phase_id=phase.phase_id, type="agent_start", name=agent.name,
+        payload={"model": agent.model, "effort": agent.effort, "thinking": agent.thinking,
+                 "color": agent.color, "session_id": execution.session_id,
+                 "harness": agent.coding_agent, "coding_agent": agent.coding_agent,
+                 "purpose": agent.purpose, "tools": agent.tools,
+                 "harness_engineering": agent.harness_engineering}))
+    run.console.agent_started(agent.name, agent.coding_agent, agent.model, execution.session_id)
 
-    result = send(user_text)
-    envelope, attempt = _parse_with_retries(run, phase, call, result, send)
 
-    # claim gates — violations flow back into the SAME session as corrections
-    for gate_attempt in range(1, max(1, phase.params.retries + 1) + 1):
-        violations = []
-        for gate in call.gates:
-            report = _as_report(gate(envelope, run))
-            found = report.violations
-            run.tracer.gate_row(phase, gate.__name__, report, gate_attempt)
-            run.tracer.event(EventRecord(
-                adw_id=run.adw_id, phase_id=phase.phase_id,
-                type="gate_fail" if found else "gate_pass", name=gate.__name__,
-                payload={"attempt": gate_attempt, "violations": found,
-                         "checks": [c.model_dump() for c in report.checks]}))
-            run.console.gate_result(gate.__name__, report)
-            violations.extend(found)
+def _run_exchange(execution: AgentExecution,
+                  call: AgentCall) -> tuple[EnvelopeBase, int]:
+    result = _send(execution, execution.user_text)
+    envelope, attempt = _parse_with_retries(
+        execution.run, execution.phase, call, result, lambda text: _send(execution, text))
+    return _run_gates(execution, call, envelope, attempt)
+
+
+def _send(execution: AgentExecution, prompt_text: str) -> HarnessResult:
+    request = execution.request.model_copy(update={"prompt": prompt_text,
+                                                   "session_id": execution.session_id})
+    result = _run_adapter(execution, request)
+    execution.session_id = result.session_id
+    save_session(execution.run, execution.agent, result.session_id)
+    execution.run.add_usage(result.usage.total_tokens, result.usage.total_cost)
+    execution.spent.merge(result.usage)
+    execution.latest = result
+    return result
+
+
+def _run_adapter(execution: AgentExecution, request: HarnessRequest) -> HarnessResult:
+    run, phase, agent = execution.run, execution.phase, execution.agent
+    return execution.adapter.run(
+        request, on_event=_event_forwarder(run, phase, agent),
+        on_spawn=lambda pid: run.tracer.process_start(
+            run.adw_id, "agent", agent.name, pid,
+            f"{agent.coding_agent} {agent.name} {agent.model}"),
+        on_exit=lambda pid: run.tracer.process_end(run.adw_id, pid))
+
+
+def _run_gates(execution: AgentExecution, call: AgentCall,
+               envelope: EnvelopeBase, attempt: int) -> tuple[EnvelopeBase, int]:
+    for gate_attempt in range(1, max(1, execution.phase.params.retries + 1) + 1):
+        violations = _gate_violations(execution, call, envelope, gate_attempt)
         if not violations:
-            break
-        if gate_attempt > phase.params.retries:
-            raise GateFailure(f"{agent.name} failed gates after {gate_attempt} attempt(s):\n- "
-                              + "\n- ".join(violations))
-        phase.attempt = gate_attempt
-        run.console.retry(agent.name, gate_attempt, phase.params.retries,
-                          f"{len(violations)} gate violation(s)")
-        correction = ("Your previous response failed validation:\n- "
-                      + "\n- ".join(violations)
-                      + "\n\nFix these problems, then re-emit ONLY your Report JSON.")
-        result = send(correction)
-        envelope, attempt = _parse_with_retries(run, phase, call, result, send)
+            return envelope, attempt
+        _raise_exhausted_gates(execution, gate_attempt, violations)
+        _send_gate_correction(execution, gate_attempt, violations)
+        result = _send(execution, _gate_correction(violations))
+        envelope, attempt = _parse_with_retries(
+            execution.run, execution.phase, call, result, lambda text: _send(execution, text))
+    raise AssertionError("gate retry loop ended without a result")
 
-    # Permission is checked after every send is done, and before the envelope is
-    # accepted: an agent does not get to report success on a phase in which it
-    # wrote somewhere it was not allowed to.
+
+def _gate_violations(execution: AgentExecution, call: AgentCall,
+                     envelope: EnvelopeBase, attempt: int) -> list[str]:
+    violations: list[str] = []
+    for gate in call.gates:
+        report = _as_report(gate(envelope, execution.run))
+        found = report.violations
+        execution.run.tracer.gate_row(execution.phase, gate.__name__, report, attempt)
+        _trace_gate_result(execution, gate.__name__, report, attempt, found)
+        execution.run.console.gate_result(gate.__name__, report)
+        violations.extend(found)
+    return violations
+
+
+def _trace_gate_result(execution: AgentExecution, gate_name: str,
+                       report: GateReport, attempt: int, found: list[str]) -> None:
+    execution.run.tracer.event(EventRecord(
+        adw_id=execution.run.adw_id, phase_id=execution.phase.phase_id,
+        type="gate_fail" if found else "gate_pass", name=gate_name,
+        payload={"attempt": attempt, "violations": found,
+                 "checks": [check.model_dump() for check in report.checks]}))
+
+
+def _raise_exhausted_gates(execution: AgentExecution, attempt: int,
+                           violations: list[str]) -> None:
+    if attempt <= execution.phase.params.retries:
+        return
+    raise GateFailure(f"{execution.agent.name} failed gates after {attempt} attempt(s):\n- "
+                      + "\n- ".join(violations))
+
+
+def _send_gate_correction(execution: AgentExecution, attempt: int,
+                          violations: list[str]) -> None:
+    execution.phase.attempt = attempt
+    execution.run.console.retry(execution.agent.name, attempt, execution.phase.params.retries,
+                                f"{len(violations)} gate violation(s)")
+
+
+def _gate_correction(violations: list[str]) -> str:
+    return ("Your previous response failed validation:\n- " + "\n- ".join(violations)
+            + "\n\nFix these problems, then re-emit ONLY your Report JSON.")
+
+
+def _enforce_permissions(execution: AgentExecution,
+                         tree_before: dict[str, str]) -> list[str]:
     try:
-        touched = permissions.enforce(run, phase, agent, tree_before)
+        return permissions.enforce(execution.run, execution.phase, execution.agent, tree_before)
     except permissions.PermissionBreach as breach:
-        run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
-                                     type="error", name="permission_breach",
-                                     payload={"agent": agent.name, "error": str(breach),
-                                              "writes": agent.writes,
-                                              "protected_files": run.cfg.defaults.protected_files}))
+        _trace_permission_breach(execution, breach)
         raise
-    if touched:
-        run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
-                                     type="log", name="paths_touched",
-                                     payload={"agent": agent.name, "paths": touched}))
 
-    _persist_envelope(run, phase, agent.name, call, envelope, attempt, valid=True)
-    run.console.envelope_summary(envelope)
-    context = latest or result
-    run.tracer.agent_session_row(run.adw_id, agent, active_session_id or "",
-                                 context_tokens=context.context_tokens,
-                                 context_window=context.context_window)
-    run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
-                                 type="handoff", name=agent.name,
-                                 payload={"artifacts": envelope.artifacts,
-                                          "summary": envelope.summary}))
-    run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
-                                 type="agent_end", name=agent.name,
-                                 # Phase totals, not the last send's: a retried
-                                 # phase paid for every attempt.
-                                 tokens=spent.total_tokens,
-                                 payload={"cost": spent.total_cost,
-                                          "usage": spent.model_dump(),
-                                          "harness": agent.coding_agent,
-                                          "coding_agent": agent.coding_agent,
-                                          "session_id": active_session_id,
-                                          "effort": agent.effort,
-                                          "thinking": agent.thinking,
-                                          "returncode": context.returncode,
-                                          "context_tokens": context.context_tokens,
-                                          "context_window": context.context_window}))
-    run.console.agent_finished(agent.name, spent.total_tokens, spent.total_cost)
+
+def _trace_permission_breach(execution: AgentExecution,
+                             breach: permissions.PermissionBreach) -> None:
+    agent, run, phase = execution.agent, execution.run, execution.phase
+    run.tracer.event(EventRecord(
+        adw_id=run.adw_id, phase_id=phase.phase_id, type="error", name="permission_breach",
+        payload={"agent": agent.name, "error": str(breach), "writes": agent.writes,
+                 "protected_files": run.cfg.defaults.protected_files}))
+
+
+def _trace_touched(execution: AgentExecution, touched: list[str]) -> None:
+    if touched:
+        execution.run.tracer.event(EventRecord(
+            adw_id=execution.run.adw_id, phase_id=execution.phase.phase_id,
+            type="log", name="paths_touched",
+            payload={"agent": execution.agent.name, "paths": touched}))
+
+
+def _finish_execution(execution: AgentExecution, call: AgentCall,
+                      envelope: EnvelopeBase, attempt: int) -> EnvelopeBase:
+    _persist_envelope(execution.run, execution.phase, execution.agent.name, call, envelope,
+                      attempt, valid=True)
+    _trace_completion(execution, envelope)
     if envelope.status != "success":
-        raise RuntimeError(f"{agent.name} reported status={envelope.status!r}: {envelope.summary}")
+        raise RuntimeError(f"{execution.agent.name} reported status={envelope.status!r}: "
+                           f"{envelope.summary}")
     return envelope
+
+
+def _trace_completion(execution: AgentExecution, envelope: EnvelopeBase) -> None:
+    context = execution.latest or HarnessResult(session_id=execution.session_id or "")
+    _record_agent_session(execution, context)
+    _trace_handoff(execution, envelope)
+    _trace_agent_end(execution, context)
+    execution.run.console.envelope_summary(envelope)
+    execution.run.console.agent_finished(execution.agent.name, execution.spent.total_tokens,
+                                          execution.spent.total_cost)
+
+
+def _record_agent_session(execution: AgentExecution, context: HarnessResult) -> None:
+    execution.run.tracer.agent_session_row(
+        execution.run.adw_id, execution.agent, execution.session_id or "",
+        context_tokens=context.context_tokens, context_window=context.context_window)
+
+
+def _trace_handoff(execution: AgentExecution, envelope: EnvelopeBase) -> None:
+    execution.run.tracer.event(EventRecord(
+        adw_id=execution.run.adw_id, phase_id=execution.phase.phase_id,
+        type="handoff", name=execution.agent.name,
+        payload={"artifacts": envelope.artifacts, "summary": envelope.summary}))
+
+
+def _trace_agent_end(execution: AgentExecution, context: HarnessResult) -> None:
+    agent, run, phase, spent = execution.agent, execution.run, execution.phase, execution.spent
+    run.tracer.event(EventRecord(
+        adw_id=run.adw_id, phase_id=phase.phase_id, type="agent_end", name=agent.name,
+        tokens=spent.total_tokens,
+        payload={"cost": spent.total_cost, "usage": spent.model_dump(),
+                 "harness": agent.coding_agent, "coding_agent": agent.coding_agent,
+                 "session_id": execution.session_id, "effort": agent.effort,
+                 "thinking": agent.thinking, "returncode": context.returncode,
+                 "context_tokens": context.context_tokens,
+                 "context_window": context.context_window}))
 
 
 # ── internals ────────────────────────────────────────────────────────────────
@@ -310,8 +416,7 @@ def _extract_json(text: str) -> dict:
 
 
 def _parse_with_retries(run, phase: Phase, call: AgentCall, result, send):
-    """Parse the final response against the declared output type; on failure,
-    continue the SAME session with a correction (bounded)."""
+    """Parse the final response; on failure, continue the same session (bounded)."""
     for attempt in range(1, JSON_FIX_ATTEMPTS + 2):
         try:
             payload = _extract_json(result.text)

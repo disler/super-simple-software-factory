@@ -29,7 +29,7 @@ Purely cosmetic and safe to change mid-project: the color rides the `agent_start
 
 ## Retune tools and harness
 
-Use portable capabilities in new rosters: `read`, `search`, `shell`, `write`, `edit`. Pi accepts `bash → shell` and `grep`/`find`/`ls → search` as compatibility aliases. Codex accepts only its inspection profile (`read`, `search`, `shell`) or mutation profile (all five); Claude Code accepts portable subsets.
+Use portable capabilities in new rosters: `read`, `search`, `shell`, `write`, `edit`. The shared resolver accepts `bash → shell` and `grep`/`find`/`ls → search` for every harness. Codex accepts an alias only when its normalized result is the inspection profile (`read`, `search`, `shell`) or mutation profile (all five); Claude Code accepts portable subsets.
 
 Set the roster-wide floor in `defaults`, then narrow per agent:
 
@@ -50,7 +50,7 @@ agents:
 
 Narrow by role, not by reflex:
 
-- Any agent that must produce a `context_handoff/` artifact needs **`write`** — without it, it falls back to a `bash` heredoc to create the file the gate checks for.
+- Any agent that must directly produce a `context_handoff/` artifact needs a **writable harness profile** and `write`. Native read-only Claude Code and Codex profiles cannot write the repository-local runtime; their structured response still works, but it cannot stand in for a phase whose gate requires a file.
 - Withhold `edit`/`write` only where the restriction *is* the guarantee. The reviewer's contract is "change nothing", so withholding `edit` makes that structural instead of merely prompted.
 - Recon agents should get the full read surface (`read`, `grep`, `find`, `ls`) — cheaper and more legible in the trace than the equivalent `bash` calls.
 
@@ -63,7 +63,7 @@ Narrow by role, not by reflex:
       - .pi/extensions/json_guard.ts    # a pi extension FILE PATH
 ```
 
-Entries are Pi extension **file paths**, passed through to that adapter and applied to that agent only. Reach for an output-tightening extension when a Pi agent keeps wrapping its envelope in prose and burning correction retries. The starter roster ships with none — this is an escape hatch, not a default.
+Entries are Pi extension **file paths**, passed through to that adapter and applied to that agent only. The starter planner and scout already use the shipped `subagents.ts` extension. Add a custom extension only when a Pi agent needs behavior such as output tightening; it is an escape hatch, not a default.
 
 **Adding a tool-registering extension is a two-part edit.** The extension path goes in `harness_engineering`, *and* the tool name it registers goes in that agent's `tools` list:
 

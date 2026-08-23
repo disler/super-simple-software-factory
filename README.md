@@ -172,9 +172,9 @@ agents:
 
 Five starter agents ship in the box: `planner`, `builder`, `scout` (read-only recon), `reviewer`, and `documenter`. There is no tester, because running a suite is a known command and therefore code.
 
-Every agent gets its own model, effort, prompts, tools, and harness. That is the core surface you tune. Use portable capabilities (`read`, `search`, `shell`, `write`, `edit`) for rosters that span harnesses; Codex accepts either the inspection profile (`read`, `search`, `shell`) or the mutation profile (all five). Pi additionally supports its legacy aliases and extensions.
+Every agent gets its own model, effort, prompts, tools, and harness. That is the core surface you tune. Use portable capabilities (`read`, `search`, `shell`, `write`, `edit`) for rosters that span harnesses. The shared resolver also accepts `bash`, `grep`, `find`, and `ls`; Codex accepts an alias only when its normalized result is the inspection profile (`read`, `search`, `shell`) or the mutation profile (all five). Pi additionally supports extensions.
 
-**`tools` is a capability list. `writes` is the boundary.** They are not the same thing. Claude Code and Codex receive native read-only or workspace-write sandbox settings from `writes`; all harnesses also receive after-the-fact Git change-set protection. Unauthorized repository changes are rolled back and the phase fails. A read-only agent is read-only with respect to your repo, never unable to write its own report.
+**`tools` is a capability list. `writes` is the boundary.** They are not the same thing. Claude Code and Codex receive native read-only or workspace-write sandbox settings from `writes`; all harnesses also receive after-the-fact Git change-set protection on every completed or failed execute path. Unauthorized repository changes are rolled back and the phase fails. The orchestrator writes prompts, streams, and envelopes. A native read-only Claude Code or Codex agent cannot create `context_handoff/` files inside the repo; use its structured output or choose a writable profile when the phase requires direct artifacts.
 
 Config defines who an agent **is**. The ADW call site defines how it is **used**. That split is what lets one agent serve many different calls. **ADW scripts never name a model, they name an agent.**
 
@@ -222,7 +222,7 @@ That commit phase is the whole pattern in miniature. The builder proposes the me
   <img src="images/05_envelope_gates.svg" alt="An agent's final JSON parsed against its output type, checked by gates, with violations looping back into the same session as a correction" width="780">
 </p>
 
-An agent has exactly two output channels: reference files written into `context_handoff/`, and a final valid-JSON response parsed against the output type the call declared. Code persists that response as `envelope.json`, records it, and injects it into the next agent's prompt. Context transfers in code, not in conversation.
+An agent has a final valid-JSON response parsed against the output type the call declared, and writable profiles may also create reference files in `context_handoff/`. Code persists the response as `envelope.json`, records it, and injects it into the next agent's prompt. Native read-only Claude Code and Codex profiles retain the structured response channel but cannot create repository-local handoff files. Context transfers in code, not in conversation.
 
 ```python
 class EnvelopeBase(BaseModel):
