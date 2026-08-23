@@ -11,24 +11,31 @@ from __future__ import annotations
 import json
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
-from . import agents, git_helper
+from . import agents
 from .console import Console
 from .data_types import (AgentCall, EnvelopeBase, EventRecord, Phase, PhaseParams,
                          SSSFConfig)
 from .diagnostics import sanitize_diagnostic, sanitize_text
+from .runtime_paths import RuntimePaths
 from .tracer import Tracer
 from .utils import ensure_dir, now_iso
 
 
-def _runtime_data_dir(repo_root: Path, configured_dir: str) -> Path:
-    """Anchor a relative runtime location to its repository root.
+@dataclass(frozen=True)
+class RunContext:
+    """Dependencies and fixed filesystem paths needed to construct one run.
 
-    Example: ``_runtime_data_dir(root, "adws/adw_data")`` stays below ``root``.
+    Example: ``Run(RunContext(cfg, adw_id, tracer, engineer, paths))``.
     """
-    path = Path(configured_dir)
-    return path if path.is_absolute() else repo_root / path
+
+    cfg: SSSFConfig
+    adw_id: str
+    tracer: Tracer
+    engineer: str
+    runtime_paths: RuntimePaths
 
 
 def _load_agent_map(path: Path) -> dict[str, dict[str, object]]:
@@ -80,19 +87,18 @@ class PhaseHandle:
 
 
 class Run:
-    def __init__(self, cfg: SSSFConfig, adw_id: str, tracer: Tracer, engineer: str) -> None:
-        self.cfg = cfg
-        self.adw_id = adw_id
-        self.tracer = tracer
-        self.console = Console(tracer, adw_id)
-        self.engineer = engineer
+    def __init__(self, context: RunContext) -> None:
+        self.cfg = context.cfg
+        self.adw_id = context.adw_id
+        self.tracer = context.tracer
+        self.console = Console(context.tracer, context.adw_id)
+        self.engineer = context.engineer
         self.phases: list[Phase] = []
         self.tokens = 0
         self.cost = 0.0
-        self._seq = tracer.max_phase_seq(adw_id)   # a joined run continues the sequence
-        self.repo_root = git_helper.repo_root()    # where every agent is spawned to work
-        runtime_dir = _runtime_data_dir(self.repo_root, cfg.defaults.data_dir)
-        self.session_dir = ensure_dir(runtime_dir / "sessions" / adw_id)
+        self._seq = context.tracer.max_phase_seq(context.adw_id)
+        self.repo_root = context.runtime_paths.repo_root
+        self.session_dir = ensure_dir(context.runtime_paths.session_dir)
         self.context_handoff_dir = ensure_dir(self.session_dir / "context_handoff")
         self._agent_map_path = self.session_dir / "agent_map.json"
         self.agent_map: dict[str, dict[str, object]] = _load_agent_map(self._agent_map_path)

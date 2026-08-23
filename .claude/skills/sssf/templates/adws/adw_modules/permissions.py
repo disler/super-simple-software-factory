@@ -78,7 +78,7 @@ def permitted(path: str, agent: AgentConfig, run: PermissionRun,
 
     Example: ``permitted("docs/guide.md", agent, run, before)``.
     """
-    if path.startswith(snapshot_state.runtime_prefix + "/"):
+    if snapshot_state.runtime_prefix and path.startswith(snapshot_state.runtime_prefix + "/"):
         return True
     if any(_matches(path, pattern) for pattern in agent.writes or []):
         return True
@@ -172,6 +172,15 @@ def enforce(run: PermissionRun, phase: Phase, agent: AgentConfig,
     Example: ``touched = enforce(run, phase, agent, before)``.
     """
     del phase
+    return _enforce_with_cleanup(run, agent, before)
+
+
+def _enforce_with_cleanup(run: PermissionRun, agent: AgentConfig,
+                          before: RepositorySnapshot) -> list[str]:
+    """Keep cleanup observable while preserving the primary enforcement error.
+
+    Example: ``_enforce_with_cleanup(run, agent, before)`` enforces one call.
+    """
     primary: BaseException | None = None
     try:
         return _enforce_snapshot(run, agent, before)

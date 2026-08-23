@@ -76,15 +76,15 @@ class RepositorySnapshot:
     worktree_backup_dir: Path
     paths: dict[str, FileState]
     git_integrity: GitIntegrityState
-    runtime_prefix: str
-    runtime_node: FileState
+    runtime_prefix: str | None
+    runtime_node: FileState | None
 
 
 def capture_repository(repo_root: Path, session_dir: Path) -> RepositorySnapshot:
-    """Capture Git-visible ordinary files and freeze permitted runtime scope.
+    """Capture Git-visible ordinary files and freeze an in-repository runtime.
 
-    The runtime prefix remains in the captured path set and is permitted only
-    during enforcement. Example: ``snapshot = capture_repository(root, session)``.
+    An external absolute runtime is outside this safeguard and needs no prefix.
+    Example: ``snapshot = capture_repository(root, session)``.
     """
     root = validate_repository(repo_root)
     runtime_prefix, runtime_node = capture_runtime_prefix(repo_root, session_dir)
@@ -114,8 +114,8 @@ def validate_repository(repo_root: Path) -> Path:
     return root
 
 
-def capture_runtime_prefix(repo_root: Path, session_dir: Path) -> tuple[str, FileState]:
-    """Freeze one lexical runtime directory after rejecting symlink components.
+def capture_runtime_prefix(repo_root: Path, session_dir: Path) -> tuple[str | None, FileState | None]:
+    """Freeze an in-repository runtime directory after rejecting symlink components.
 
     Example: ``prefix, node = capture_runtime_prefix(root, run.session_dir)``.
     """
@@ -123,8 +123,8 @@ def capture_runtime_prefix(repo_root: Path, session_dir: Path) -> tuple[str, Fil
     target = _runtime_lexical_path(lexical_root, session_dir)
     try:
         relative = target.relative_to(lexical_root)
-    except ValueError as error:
-        raise RepositoryStateError(f"runtime directory {target!s} expected below {lexical_root!s}") from error
+    except ValueError:
+        return None, None
     if not relative.parts:
         raise RepositoryStateError(f"runtime directory {target!s} must not be the repository root")
     _reject_symlink_components(lexical_root, relative)
@@ -190,6 +190,8 @@ def runtime_node_changed(snapshot: RepositorySnapshot) -> bool:
 
     Example: ``if runtime_node_changed(snapshot): raise PermissionBreach(...)``.
     """
+    if snapshot.runtime_prefix is None or snapshot.runtime_node is None:
+        return False
     node = _path_at(snapshot.repo_root, snapshot.runtime_prefix)
     return _node_state(node, directories=True) != snapshot.runtime_node
 

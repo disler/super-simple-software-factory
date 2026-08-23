@@ -44,7 +44,7 @@ defaults:
     - adws/adw_modules/
     - adws/adw_sssf_config/
     - adws/adw_*.py
-  data_dir: adws/adw_data          # runtime home: {data_dir}/sessions/{adw_id}/{agent_name}/
+  data_dir: adws/adw_data          # relative to repo root; an absolute external runtime is supported
 
 observability:
   db: adws/adw_data/sssf.db        # tracer writes here directly; the UI polls it

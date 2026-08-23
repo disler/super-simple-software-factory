@@ -13,7 +13,9 @@ import sys
 from pathlib import Path
 
 from .data_types import SSSFConfig
-from .runner import Run
+from . import git_helper
+from .runner import Run, RunContext
+from .runtime_paths import resolve_runtime_paths
 from .tracer import Tracer
 from .utils import engineer_name, new_id
 
@@ -37,9 +39,9 @@ def _finalize_when_killed(run: Run) -> None:
 
 def ensure(cfg: SSSFConfig, adw_id: str | None = None) -> Run:
     adw_id = adw_id or new_id(8)
-    tracer = Tracer(cfg.observability.db,
-                    f"{cfg.defaults.data_dir}/sessions/{adw_id}/events.jsonl")
-    run = Run(cfg=cfg, adw_id=adw_id, tracer=tracer, engineer=engineer_name())
+    runtime_paths = resolve_runtime_paths(git_helper.repo_root(), cfg.defaults.data_dir, adw_id)
+    tracer = Tracer(cfg.observability.db, str(runtime_paths.events_path))
+    run = Run(RunContext(cfg, adw_id, tracer, engineer_name(), runtime_paths))
     tracer.session_start(adw_id, run.engineer, adw_name=Path(sys.argv[0]).stem)
     # This process is the run. Record it before any phase opens, so a run that
     # hangs in its first agent call is still killable by adw_id.

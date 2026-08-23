@@ -9,7 +9,7 @@ The orchestrator always persists a final response, and an agent may additionally
 1. **Reference files** written into `context_handoff/` — plans, notes, artifacts for the agents that follow.
 2. **A final valid-JSON response** — the envelope, its direct response and nothing else.
 
-Code does the rest: parse the response against the output type the call declared, persist it as `envelope.json`, and inject it into the next agent's user prompt. Native read-only Claude Code and Codex profiles cannot create `context_handoff/` files because that runtime is under the repository cwd; they retain the structured response channel. Use a writable profile when an ADW requires a direct artifact. The Git monitor exempts only this frozen session directory, not all of `data_dir`.
+Code does the rest: parse the response against the output type the call declared, persist it as `envelope.json`, and inject it into the next agent's user prompt. Native read-only Claude Code and Codex profiles cannot create `context_handoff/` files because that runtime is under the repository cwd; they retain the structured response channel. Use a writable profile when an ADW requires a direct artifact. A relative `data_dir` is rooted at the Git repository; an absolute external runtime is supported but outside the Git safeguard. The monitor exempts only an in-repository frozen session directory, not all of `data_dir`.
 
 ## Envelope schema
 

@@ -73,22 +73,51 @@ def run_jsonl_process(
     except BaseException:
         temporary_stderr.unlink(missing_ok=True)
         raise
+    return _run_started_process(process, spec, on_json, on_spawn, on_exit, temporary_stderr)
+
+
+def _run_started_process(process: subprocess.Popen[str], spec: ProcessSpec,
+                         on_json: JsonEventCallback, on_spawn: ProcessCallback | None,
+                         on_exit: ProcessCallback | None, temporary_stderr: Path) -> ProcessOutcome:
+    """Stream one started process, then finish its lifecycle before reporting exit.
+
+    Example: ``_run_started_process(process, spec, callback, None, None, stderr)``.
+    """
     returncode = -1
     stderr_text = ""
     try:
-        _notify_spawn(process, on_spawn)
-        _write_stdin(process, spec.stdin_text)
-        _stream_stdout(process, spec, on_json)
+        _run_process_body(process, spec, on_json, on_spawn)
     finally:
-        try:
-            returncode = _finish_process(process)
-        finally:
-            try:
-                stderr_text = _persist_sanitized_stderr(temporary_stderr, spec.stderr_output_path)
-            finally:
-                _notify_exit(process, on_exit)
+        returncode, stderr_text = _close_process(process, spec, temporary_stderr, on_exit)
     return ProcessOutcome(returncode=returncode,
                           stderr_tail=stderr_text[-800:])
+
+
+def _run_process_body(process: subprocess.Popen[str], spec: ProcessSpec,
+                      on_json: JsonEventCallback, on_spawn: ProcessCallback | None) -> None:
+    """Notify, write input, and stream one harness process.
+
+    Example: ``_run_process_body(process, spec, callback, None)``.
+    """
+    _notify_spawn(process, on_spawn)
+    _write_stdin(process, spec.stdin_text)
+    _stream_stdout(process, spec, on_json)
+
+
+def _close_process(process: subprocess.Popen[str], spec: ProcessSpec,
+                   temporary_stderr: Path, on_exit: ProcessCallback | None) -> tuple[int, str]:
+    """Finish the process group, preserve stderr, then issue the exit callback.
+
+    Example: ``_close_process(process, spec, stderr, callback)`` returns diagnostics.
+    """
+    try:
+        returncode = _finish_process(process)
+    finally:
+        try:
+            stderr_text = _persist_sanitized_stderr(temporary_stderr, spec.stderr_output_path)
+        finally:
+            _notify_exit(process, on_exit)
+    return returncode, stderr_text
 
 
 def _prepare_output_paths(spec: ProcessSpec) -> None:
