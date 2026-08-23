@@ -15,12 +15,12 @@ from typing import Optional
 
 import yaml
 
-from . import agent_pi, permissions, prompts
+from . import permissions, prompts
 from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
                          GateCheck, GateReport, Phase, SSSFConfig)
 from .harness_types import (HarnessError, HarnessEvent, HarnessProfile,
                             HarnessRequest, HarnessResult, UsageBreakdown)
-from .utils import new_id
+from .harness_registry import get_adapter
 
 JSON_FIX_ATTEMPTS = 2      # continue-with-correction attempts for malformed JSON
 
@@ -70,18 +70,14 @@ def validate(cfg: SSSFConfig, required: list[str]) -> None:
         except SystemExit as e:
             problems.append(str(e))
             continue
-        if agent.coding_agent != "pi":
-            problems.append(f"agent {name!r}: coding_agent {agent.coding_agent!r} "
-                            f"is not implemented in v1 (pi only)")
         for label, ref in (("system", agent.prompt_engineering.system),
                            ("user", agent.prompt_engineering.user)):
             if not Path(ref).is_file():
                 problems.append(f"agent {name!r}: {label} prompt not found: {ref}")
-        if agent.coding_agent == "pi":
-            try:
-                agent_pi.ADAPTER.validate_profile(_harness_profile(agent))
-            except (HarnessError, ValueError) as error:
-                problems.append(f"agent {name!r}: {error}")
+        try:
+            get_adapter(agent.coding_agent).validate_profile(_harness_profile(agent))
+        except (HarnessError, ValueError) as error:
+            problems.append(f"agent {name!r}: {error}")
     if problems:
         raise SystemExit("config validation failed:\n- " + "\n- ".join(problems))
 
@@ -89,8 +85,9 @@ def validate(cfg: SSSFConfig, required: list[str]) -> None:
 # ── execution ────────────────────────────────────────────────────────────────
 
 def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
-    """One agent call: render prompts -> pi run -> typed parse -> gates -> envelope."""
+    """One agent call: render prompts -> harness run -> typed parse -> gates -> envelope."""
     agent = resolve(run.cfg, phase.params.owner)
+    adapter = get_adapter(agent.coding_agent)
     agent_dir = run.session_dir / agent.name
     agent_dir.mkdir(parents=True, exist_ok=True)
 
@@ -104,43 +101,46 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
     prompts.save(agent_dir / "prompts", "system.md", system_text)
     prompts.save(agent_dir / "prompts", "user.md", user_text)
 
-    session_id = _agent_session_id(run, agent)
+    active_session_id = reusable_session(run.agent_map.get(agent.name), agent)
+    if active_session_id is None:
+        active_session_id = adapter.new_session_id(run.adw_id, agent.name)
     run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
                                  type="agent_start", name=agent.name,
-                                 payload={"model": agent.model, "thinking": agent.thinking,
+                                 payload={"model": agent.model, "effort": agent.effort,
+                                          "thinking": agent.thinking,
                                           "color": agent.color,
-                                          "session_id": session_id,
+                                          "session_id": active_session_id,
+                                          "harness": agent.coding_agent,
                                           "coding_agent": agent.coding_agent,
                                           "purpose": agent.purpose,
                                           "tools": agent.tools,  # None = all tools
                                           "harness_engineering": agent.harness_engineering}))
-    run.console.agent_started(agent.name, agent.model, session_id)
+    run.console.agent_started(agent.name, agent.coding_agent, agent.model, active_session_id)
 
-    # Parse retries and gate corrections re-enter the SAME pi session, so the
+    # Parse retries and gate corrections re-enter the SAME harness session, so the
     # last send is the one whose context occupancy is current — while spend is
     # the opposite: every send costs, so usage accumulates across all of them.
     latest: HarnessResult | None = None
     spent = UsageBreakdown()
+    base_request = HarnessRequest(
+        profile=_harness_profile(agent), prompt="", system_prompt=system_text,
+        session_id=None, runtime_dir=str((agent_dir / "harness_sessions").resolve()),
+        raw_output_path=str((agent_dir / "raw_output.jsonl").resolve()),
+        cwd=str(run.repo_root), output_schema=call.output_type.model_json_schema(),
+    )
 
     def send(prompt_text: str) -> HarnessResult:
-        nonlocal latest
-        request = HarnessRequest(
-            profile=_harness_profile(agent),
-            prompt=prompt_text,
-            system_prompt=system_text,
-            session_id=session_id,
-            runtime_dir=str((agent_dir / "pi_sessions").resolve()),
-            raw_output_path=str((agent_dir / "raw_output.jsonl").resolve()),
-            cwd=str(run.repo_root),
-            output_schema=call.output_type.model_json_schema(),
-        )
-        result = agent_pi.ADAPTER.run(
-            request,
-            on_event=_event_forwarder(run, phase, agent.name),
+        nonlocal active_session_id, latest
+        request = base_request.model_copy(update={"prompt": prompt_text,
+                                                  "session_id": active_session_id})
+        result = adapter.run(
+            request, on_event=_event_forwarder(run, phase, agent),
             on_spawn=lambda pid: run.tracer.process_start(
                 run.adw_id, "agent", agent.name, pid,
                 f"{agent.coding_agent} {agent.name} {agent.model}"),
             on_exit=lambda pid: run.tracer.process_end(run.adw_id, pid))
+        active_session_id = result.session_id
+        save_session(run, agent, active_session_id)
         run.add_usage(result.usage.total_tokens, result.usage.total_cost)
         spent.merge(result.usage)
         latest = result
@@ -202,11 +202,9 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
     _persist_envelope(run, phase, agent.name, call, envelope, attempt, valid=True)
     run.console.envelope_summary(envelope)
     context = latest or result
-    run.tracer.agent_session_row(run.adw_id, agent, session_id,
+    run.tracer.agent_session_row(run.adw_id, agent, active_session_id or "",
                                  context_tokens=context.context_tokens,
                                  context_window=context.context_window)
-    run.save_agent_map(agent.name, {"session_id": session_id, "model": agent.model,
-                                    "coding_agent": agent.coding_agent})
     run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
                                  type="handoff", name=agent.name,
                                  payload={"artifacts": envelope.artifacts,
@@ -218,6 +216,12 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
                                  tokens=spent.total_tokens,
                                  payload={"cost": spent.total_cost,
                                           "usage": spent.model_dump(),
+                                          "harness": agent.coding_agent,
+                                          "coding_agent": agent.coding_agent,
+                                          "session_id": active_session_id,
+                                          "effort": agent.effort,
+                                          "thinking": agent.thinking,
+                                          "returncode": context.returncode,
                                           "context_tokens": context.context_tokens,
                                           "context_window": context.context_window}))
     run.console.agent_finished(agent.name, spent.total_tokens, spent.total_cost)
@@ -235,11 +239,31 @@ def _as_report(result) -> GateReport:
     return GateReport(checks=[GateCheck(item=str(v), ok=False) for v in (result or [])])
 
 
-def _agent_session_id(run, agent: AgentConfig) -> str:
-    entry = run.agent_map.get(agent.name)
-    if entry and entry.get("model") == agent.model:
-        return entry["session_id"]           # rejoin the existing context window
-    return f"sssf-{run.adw_id}-{agent.name}-{new_id(4)}"
+def reusable_session(entry: dict[str, object] | None, agent: AgentConfig) -> str | None:
+    """Return an existing session only when its harness and model still match.
+
+    Example: ``reusable_session({"session_id": "old", "model": "m"}, agent)`` reuses Pi.
+    """
+    if not entry:
+        return None
+    recorded_harness = str(entry.get("coding_agent") or "pi")
+    if recorded_harness != agent.coding_agent or entry.get("model") != agent.model:
+        return None
+    session_id = entry.get("session_id")
+    return str(session_id) if session_id else None
+
+
+def save_session(run, agent: AgentConfig, session_id: str) -> None:
+    """Persist a completed harness session for a later phase or resumed run.
+
+    Example: ``save_session(run, agent, "thread-1")`` records the active thread.
+    """
+    run.save_agent_map(agent.name, {
+        "session_id": session_id,
+        "model": agent.model,
+        "coding_agent": agent.coding_agent,
+        "effort": agent.effort,
+    })
 
 
 def _harness_profile(agent: AgentConfig) -> HarnessProfile:
@@ -248,13 +272,15 @@ def _harness_profile(agent: AgentConfig) -> HarnessProfile:
                           extensions=agent.harness_engineering, writes=agent.writes)
 
 
-def _event_forwarder(run, phase: Phase, agent_name: str):
+def _event_forwarder(run, phase: Phase, agent: AgentConfig):
     """Forward a completed normalized tool event into the current phase trace."""
     def forward(event: HarnessEvent) -> None:
         run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
                                      type="tool_call", name=event.name,
                                      started_at=event.started_at, ended_at=event.ended_at,
-                                     payload={**event.payload, "agent": agent_name}))
+                                     payload={**event.payload, "agent": agent.name,
+                                              "harness": agent.coding_agent,
+                                              "coding_agent": agent.coding_agent}))
     return forward
 
 

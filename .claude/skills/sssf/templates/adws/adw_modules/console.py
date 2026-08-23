@@ -96,9 +96,15 @@ class Console:
         self._emit(f"  [dim]· {escape(_clip(message))}[/dim]")
 
     # ── agents ──────────────────────────────────────────────────────────────
-    def agent_started(self, name: str, model: str, session_id: str) -> None:
-        self._emit(f"  [magenta]▸[/magenta] {escape(name)} [dim]{escape(model)}[/dim]"
-                   f"  [dim]session {escape(session_id)}[/dim]")
+    def agent_started(self, name: str, coding_agent: str, model: str,
+                      session_id: str | None) -> None:
+        """Print the configured harness, model, and current session identity.
+
+        Example: ``console.agent_started("builder", "codex", "gpt", None)`` starts a lane.
+        """
+        session = session_id or "new"
+        self._emit(f"  [magenta]▸[/magenta] {escape(name)} [dim]{escape(coding_agent)}"
+                   f" · {escape(model)}[/dim]  [dim]session {escape(session)}[/dim]")
 
     def agent_finished(self, name: str, tokens: int, cost: float) -> None:
         self._emit(f"  [dim]└ {escape(name)} used {tokens:,} tokens · ${cost:.4f}[/dim]")
