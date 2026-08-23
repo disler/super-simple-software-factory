@@ -11,11 +11,11 @@ unenforceable on its own:
     could still rewrite the code it was reviewing.
 
 So permission is verified the way every other claim in this system is —
-after the fact, against the repo itself. `snapshot()` fingerprints the working
-tree's change-set before an agent runs; `enforce()` compares it afterwards and
-fails the phase if the agent touched anything outside its allowlist.
+after the fact, against the repo itself. `snapshot()` saves exact working-tree
+content and Git metadata before an agent runs; `enforce()` compares and restores
+it afterwards, failing the phase if the agent touched anything outside its allowlist.
 
-Comparing change-sets, rather than watching for writes, is what catches the
+Comparing captured states, rather than watching for writes, is what catches the
 `git checkout` case: a path that was modified before the agent ran and is clean
 afterwards has been reverted, and a reversion is a modification. Appearing,
 disappearing, and changing all count.
@@ -32,70 +32,63 @@ Two keys drive it, both in sssf.config.yaml:
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
+from typing import Protocol
 
-from .data_types import AgentConfig, SSSFConfig
+from .data_types import AgentConfig, Phase, SSSFConfig
+from .repository_snapshot import (FileState, RepositorySnapshot,
+                                  RepositoryStateError, capture_repository,
+                                  cleanup_snapshot, metadata_changed,
+                                  preserve_worktree_path, restore_git_metadata,
+                                  restore_preserved_path, restore_worktree_path,
+                                  worktree_changes)
 
 
 class PermissionBreach(RuntimeError):
     """An agent modified a path it was not permitted to modify."""
 
 
-def _git(args: list[str], cwd) -> str:
-    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
-    return result.stdout if result.returncode == 0 else ""
+class PermissionRun(Protocol):
+    """Run state required by permission enforcement.
 
-
-def snapshot(run) -> dict[str, str]:
-    """Fingerprint every path the working tree currently differs on.
-
-    Tracked files carry their numstat counts, so an edit to an already-dirty
-    file still registers as a change. Untracked files are listed by name.
-    Gitignored paths never appear, which is why the session runtime under
-    `data_dir` — where handoff files legitimately land — needs no special case.
+    Example: ``snapshot(run)`` validates and captures this run's checkout.
     """
-    fingerprints: dict[str, str] = {}
-    for line in _git(["diff", "HEAD", "--numstat"], run.repo_root).splitlines():
-        fields = line.split("\t")
-        if len(fields) >= 3:
-            path = fields[-1].strip()
-            fingerprints[path] = f"{fields[0]},{fields[1]}"
-    for path in _git(["ls-files", "--others", "--exclude-standard"],
-                     run.repo_root).splitlines():
-        if path.strip():
-            fingerprints[path.strip()] = "untracked"
-    return fingerprints
+
+    cfg: SSSFConfig
+    repo_root: Path
+    session_dir: Path
 
 
-def changed_paths(before: dict[str, str], after: dict[str, str]) -> list[str]:
-    """Every path whose state differs — appeared, vanished, or was rewritten."""
-    return sorted({p for p in set(before) | set(after)
-                   if before.get(p) != after.get(p)})
+def snapshot(run: PermissionRun) -> RepositorySnapshot:
+    """Capture the recoverable repository state required before a backend spawn.
+
+    This fails closed: ``run.repo_root`` must be the actual root of a usable
+    Git worktree with a valid HEAD commit. Git failures are never empty state.
+
+    Example: ``before = snapshot(run)`` before ``adapter.run(...)``.
+    """
+    return capture_repository(run.repo_root)
 
 
 def _glob(pattern: str) -> re.Pattern:
     """Translate a pattern, with `*` stopping at a path separator.
 
-    fnmatch would let `*` cross `/`, which quietly widens every pattern:
-    `adws/adw_*.py` would match `adws/adw_data/sessions/x/y.py` as well as the
-    ADW scripts it means. `**` is the way to say "cross directories".
+    fnmatch would let `*` cross `/`, quietly widening patterns. `**` is the
+    explicit way to cross directories.
     """
     out, i = [], 0
     while i < len(pattern):
         char = pattern[i]
         if pattern.startswith("**", i):
-            out.append(".*")
-            i += 2
+            piece, width = ".*", 2
         elif char == "*":
-            out.append("[^/]*")
-            i += 1
+            piece, width = "[^/]*", 1
         elif char == "?":
-            out.append("[^/]")
-            i += 1
+            piece, width = "[^/]", 1
         else:
-            out.append(re.escape(char))
-            i += 1
+            piece, width = re.escape(char), 1
+        out.append(piece)
+        i += width
     return re.compile("".join(out))
 
 
@@ -107,7 +100,7 @@ def _matches(path: str, pattern: str) -> bool:
     return path == pattern
 
 
-def orchestrator_runtime_paths(cfg: SSSFConfig) -> list[str]:
+def orchestrator_runtime_paths(run: PermissionRun) -> list[str]:
     """Return runtime paths exempt from post-call Git change checks.
 
     The orchestrator creates prompts, streams, and envelopes here. Writable
@@ -115,65 +108,117 @@ def orchestrator_runtime_paths(cfg: SSSFConfig) -> list[str]:
     cannot write this repository-local directory, so their structured result is
     the available handoff channel.
     """
-    return [cfg.defaults.data_dir.rstrip("/") + "/"]
+    try:
+        relative = run.session_dir.resolve().relative_to(run.repo_root.resolve())
+    except ValueError:
+        return []
+    return [relative.as_posix().rstrip("/") + "/"]
 
 
-def permitted(path: str, agent: AgentConfig, cfg: SSSFConfig) -> bool:
+def permitted(path: str, agent: AgentConfig, run: PermissionRun) -> bool:
     """Session runtime first, then the agent's own list, then what is protected."""
-    if any(_matches(path, p) for p in orchestrator_runtime_paths(cfg)):
+    if any(_matches(path, p) for p in orchestrator_runtime_paths(run)):
         return True
     if any(_matches(path, p) for p in (agent.writes or [])):
         return True                      # naming a path is what unlocks a protected one
-    if any(_matches(path, p) for p in cfg.defaults.protected_files):
+    if any(_matches(path, p) for p in run.cfg.defaults.protected_files):
         return False
     return agent.writes is None          # None = unrestricted, [] = no repo writes
 
 
-def _roll_back(run, path: str, before: dict[str, str], after: dict[str, str]) -> str:
-    """Undo one unauthorized change. Returns a word describing what happened.
+def _preserve_permitted(snapshot: RepositorySnapshot, paths: list[str],
+                        after: dict[str, FileState], agent: AgentConfig,
+                        run: PermissionRun) -> dict[str, FileState]:
+    """Save permitted post-call files before metadata recovery changes the checkout."""
+    saved: dict[str, FileState] = {}
+    for path in paths:
+        if permitted(path, agent, run):
+            saved[path] = preserve_worktree_path(snapshot, path, after.get(path, FileState("missing")))
+    return saved
 
-    Only changes the agent INTRODUCED are undone. A path that was already dirty
-    when the agent started is left exactly as it is: the operator had
-    uncommitted work there, and discarding it to tidy up would be the same harm
-    this module exists to prevent, committed by the cleanup instead of the agent.
-    """
-    if path in before:
-        # Already dirty beforehand. If it is gone from the diff now, the agent
-        # reverted an engineer's uncommitted work and the content is not ours
-        # to reconstruct — say so loudly rather than pretend it was handled.
-        return "REVERTED-BY-AGENT (uncommitted work lost, cannot restore)" \
-            if path not in after else "left as-is (was already modified)"
-    if after.get(path) == "untracked":
-        try:
-            (Path(run.repo_root) / path).unlink()
-            return "deleted"
-        except OSError as error:
-            return f"could not delete ({error})"
-    result = subprocess.run(["git", "checkout", "--", path],
-                            cwd=run.repo_root, capture_output=True, text=True)
-    return "rolled back" if result.returncode == 0 else "could not roll back"
+def _restore_unauthorized(snapshot: RepositorySnapshot, breaches: list[str]) -> None:
+    """Restore every denied worktree path from its recoverable pre-call copy."""
+    for path in breaches:
+        restore_worktree_path(snapshot, path)
 
 
-def enforce(run, phase, agent: AgentConfig, before: dict[str, str]) -> list[str]:
+def _verify_recovery(snapshot: RepositorySnapshot, expected: dict[str, FileState]) -> None:
+    """Fail closed when exact path or metadata recovery does not reproduce state."""
+    after, _ = worktree_changes(snapshot)
+    failures = [path for path, state in expected.items() if after.get(path, FileState("missing")) != state]
+    if failures or metadata_changed(snapshot):
+        detail = ", ".join(failures) or "Git metadata"
+        raise RepositoryStateError(f"repository recovery did not restore exact state: {detail}")
+
+
+def _breach_message(agent: AgentConfig, run: PermissionRun, breaches: list[str],
+                    metadata_was_changed: bool) -> str:
+    """Format a complete permission error after successful recovery."""
+    scope = ("read-only" if agent.writes == [] else f"limited to {agent.writes}"
+             if agent.writes else f"barred from {run.cfg.defaults.protected_files}")
+    items = [f"  - {path} — restored from snapshot" for path in breaches]
+    if metadata_was_changed:
+        items.append("  - Git metadata — restored from snapshot")
+    return f"{agent.name} is {scope} but modified {len(items)} protected state item(s):\n" + "\n".join(items)
+
+
+def _restore_permitted(snapshot: RepositorySnapshot, saved: dict[str, FileState]) -> None:
+    """Reapply permitted post-call paths after denied paths and metadata recover."""
+    for path, state in saved.items():
+        restore_preserved_path(snapshot, path, state)
+
+
+def _expected_paths(snapshot: RepositorySnapshot, touched: list[str],
+                    saved: dict[str, FileState]) -> dict[str, FileState]:
+    """Build final state: permitted post-call paths and baseline paths otherwise."""
+    return {path: saved.get(path, snapshot.paths.get(path, FileState("missing")))
+            for path in touched}
+
+
+def _post_call_state(snapshot_state: RepositorySnapshot) -> tuple[dict[str, FileState], list[str], bool]:
+    """Capture post-call paths, recovering corrupt Git metadata before retrying."""
+    try:
+        after, touched = worktree_changes(snapshot_state)
+        return after, touched, metadata_changed(snapshot_state)
+    except RepositoryStateError:
+        restore_git_metadata(snapshot_state)
+        after, touched = worktree_changes(snapshot_state)
+        return after, touched, True
+
+
+def _enforce_snapshot(run: PermissionRun, agent: AgentConfig,
+                      snapshot_state: RepositorySnapshot) -> list[str]:
+    """Recover denied content and report every permission boundary violation."""
+    after, touched, metadata_was_changed = _post_call_state(snapshot_state)
+    breaches = [path for path in touched if not permitted(path, agent, run)]
+    saved = _preserve_permitted(snapshot_state, touched, after, agent, run)
+    _restore_unauthorized(snapshot_state, breaches)
+    if metadata_was_changed:
+        restore_git_metadata(snapshot_state)
+    _restore_permitted(snapshot_state, saved)
+    _verify_recovery(snapshot_state, _expected_paths(snapshot_state, touched, saved))
+    if breaches or metadata_was_changed:
+        raise PermissionBreach(_breach_message(agent, run, breaches, metadata_was_changed))
+    return touched
+
+
+def enforce(run: PermissionRun, phase: Phase, agent: AgentConfig,
+            before: RepositorySnapshot) -> list[str]:
     """Compare the tree against `before`; undo and raise if the agent overstepped.
 
     Returns the paths it legitimately changed, so the trace records what an
     agent actually touched rather than only what it claimed in its envelope.
 
-    Detection alone would leave the repo holding the unauthorized change while
-    reporting a failure, so anything the agent introduced outside its allowlist
-    is rolled back before the phase dies. What it cannot undo, it names.
-    """
-    after = snapshot(run)
-    touched = changed_paths(before, after)
-    breaches = [p for p in touched if not permitted(p, agent, run.cfg)]
-    if not breaches:
-        return touched
+    Detection alone would leave the repo holding an unauthorized change while
+    reporting a failure, so a byte-backed snapshot restores every denied path,
+    including pre-existing dirty and untracked content, before the phase dies.
 
-    outcomes = {p: _roll_back(run, p, before, after) for p in breaches}
-    scope = ("read-only" if agent.writes == []
-             else f"limited to {agent.writes}" if agent.writes
-             else f"barred from {run.cfg.defaults.protected_files}")
-    detail = "\n".join(f"  - {p} — {outcome}" for p, outcome in outcomes.items())
-    raise PermissionBreach(
-        f"{agent.name} is {scope} but modified {len(breaches)} path(s):\n{detail}")
+    Example: ``touched = enforce(run, phase, agent, before)``.
+    """
+    del phase
+    try:
+        return _enforce_snapshot(run, agent, before)
+    except RepositoryStateError as error:
+        raise PermissionBreach(f"repository permission recovery failed: {error}") from error
+    finally:
+        cleanup_snapshot(before)

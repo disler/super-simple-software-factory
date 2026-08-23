@@ -1,6 +1,6 @@
 # Multi-harness adapters para o SSSF
 
-Data: 2026-08-22  
+Data: 2026-08-22
 Status: design aprovado; especificação aguardando revisão
 
 ## Contexto

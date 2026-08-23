@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import yaml
 
@@ -23,6 +23,7 @@ from .harness_types import (HarnessError, HarnessEvent, HarnessProfile,
                             HarnessAdapter, HarnessName, HarnessRequest, HarnessResult,
                             UsageBreakdown)
 from .harness_registry import get_adapter
+from .repository_snapshot import RepositorySnapshot
 
 JSON_FIX_ATTEMPTS = 2      # continue-with-correction attempts for malformed JSON
 
@@ -107,8 +108,11 @@ def validate(cfg: SSSFConfig, required: list[str]) -> None:
 
 # ── execution ────────────────────────────────────────────────────────────────
 
-def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
-    """One agent call: render prompts -> harness run -> typed parse -> gates -> envelope."""
+def execute(run: "Run", phase: Phase, call: AgentCall) -> EnvelopeBase:
+    """Run one agent call through prompts, harness, typed parse, and gates.
+
+    Example: ``envelope = execute(run, phase, call)``.
+    """
     agent = resolve(run.cfg, phase.params.owner)
     execution = _prepare_execution(run, phase, call, agent)
     tree_before = permissions.snapshot(run)
@@ -265,7 +269,7 @@ def _gate_correction(violations: list[str]) -> str:
 
 
 def _enforce_permissions(execution: AgentExecution,
-                         tree_before: dict[str, str]) -> list[str]:
+                         tree_before: RepositorySnapshot) -> list[str]:
     try:
         return permissions.enforce(execution.run, execution.phase, execution.agent, tree_before)
     except permissions.PermissionBreach as breach:
@@ -360,7 +364,7 @@ def reusable_session(entry: dict[str, object] | None, agent: AgentConfig) -> str
     return str(session_id) if session_id else None
 
 
-def save_session(run, agent: AgentConfig, session_id: str) -> None:
+def save_session(run: "Run", agent: AgentConfig, session_id: str) -> None:
     """Persist a completed harness session for a later phase or resumed run.
 
     Example: ``save_session(run, agent, "thread-1")`` records the active thread.
@@ -389,7 +393,8 @@ def _runtime_dir(agent_dir: Path, harness: HarnessName) -> str:
     return str((agent_dir / "harness_sessions").resolve())
 
 
-def _event_forwarder(run, phase: Phase, agent: AgentConfig):
+def _event_forwarder(run: "Run", phase: Phase,
+                     agent: AgentConfig) -> Callable[[HarnessEvent], None]:
     """Forward a completed normalized tool event into the current phase trace."""
     def forward(event: HarnessEvent) -> None:
         run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
