@@ -12,14 +12,15 @@ SHORT_SECRET_LENGTH = 5
 SENSITIVE_ENV_KEY = re.compile(
     r"token|key|secret|password|passwd|auth|credential|cookie", re.I)
 RICH_TAG = re.compile(r"(\[/?[a-z][^\]]*\])", re.I)
-BEARER_VALUE = re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{6,}", re.I)
+BARE_SCALAR = r"[^\s,;}\]\[<](?:[^\n,;}\]\[<]*[^\s,;}\]\[<])?"
+BEARER_VALUE = re.compile(rf"\bbearer\s+{BARE_SCALAR}", re.I)
 AUTHORIZATION = re.compile(
     r"\b(?P<prefix>authorization\s*[:=]\s*)(?:(?P<quote>['\"])(?:bearer\s+)?"
-    r"[^'\"]*(?P=quote)|(?:bearer\s+)?[^\s,;\[<]+)", re.I)
+    rf"[^'\"]*(?P=quote)|(?:bearer\s+)?{BARE_SCALAR})", re.I)
 CREDENTIAL_PAIR = re.compile(
     r"(?P<prefix>(?:['\"])?(?:api[_-]?(?:token|key)|access[_-]?token|authorization|"
     r"token|key|secret|password|passwd|auth|credential|cookie)(?:['\"])?\s*[:=]\s*)"
-    r"(?:\"(?P<double>[^\"]*)\"|'(?P<single>[^']*)'|(?P<bare>[^\s,;}\]\[<]+))", re.I)
+    rf"(?:\"(?P<double>[^\"]*)\"|'(?P<single>[^']*)'|(?P<bare>{BARE_SCALAR}))", re.I)
 URL_CREDENTIALS = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^@\s/]+@", re.I)
 API_TOKEN = re.compile(
     r"\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{8,}|sk-ant-[A-Za-z0-9_-]{8,}|"
