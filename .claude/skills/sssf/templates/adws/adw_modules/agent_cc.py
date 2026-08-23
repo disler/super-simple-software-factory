@@ -17,7 +17,8 @@ from .harness_process import (ProcessOutcome, ProcessSpec, ensure_executable,
                               require_effort, run_jsonl_process)
 from .harness_types import (HarnessConfigError, HarnessEvent, HarnessName,
                             HarnessProcessError, HarnessProfile, HarnessRequest,
-                            HarnessResult, ProcessCallback, UsageBreakdown)
+                            HarnessResult, ProcessCallback, UsageBreakdown,
+                            validate_session_id)
 from .utils import now_iso, operator_env
 
 CLAUDE_PATH = os.environ.get("CLAUDE_PATH", "claude")
@@ -188,7 +189,7 @@ class ClaudeEventParser:
     def _capture_session(self, event: Mapping[str, object]) -> None:
         session_id = event.get("session_id")
         if isinstance(session_id, str) and session_id:
-            self._result.session_id = session_id
+            self._result.session_id = validate_session_id("claude_code", session_id)
 
     def _record_result(self, event: Mapping[str, object]) -> None:
         self._result.text = (json.dumps(event["structured_output"], ensure_ascii=False)
@@ -256,7 +257,8 @@ class ClaudeCodeAdapter:
 
         Example: ``adapter.run(request, on_event=record_event)`` streams tool events.
         """
-        requested_session = request.session_id or str(uuid.uuid4())
+        requested_session = (validate_session_id("claude_code", request.session_id)
+                             if request.session_id else str(uuid.uuid4()))
         result = HarnessResult(session_id=requested_session)
         parser = ClaudeEventParser(result, on_event)
         outcome = run_jsonl_process(_process_spec(request, requested_session), parser.observe,

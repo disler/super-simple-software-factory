@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .data_types import AgentConfig, EventRecord, GateReport, Phase
 from .diagnostics import sanitize_diagnostic, sanitize_json_text, sanitize_text
+from .harness_types import validate_session_id
 from .utils import ensure_dir, new_id, now_iso
 
 SCHEMA = """
@@ -186,7 +187,8 @@ class Tracer:
         self.conn.execute(
             "INSERT INTO processes (adw_id, kind, name, pid, command, started_at)"
             " VALUES (?,?,?,?,?,?)",
-            (adw_id, kind, name, pid, command[:500], now_iso()),
+            (adw_id, sanitize_text(kind), sanitize_text(name), pid,
+             sanitize_text(command)[:500], now_iso()),
         )
 
     def process_end(self, adw_id: str, pid: int) -> None:
@@ -260,6 +262,7 @@ class Tracer:
         wants one number per agent — the latest — and a session that runs the
         same agent twice overwrites it, exactly like model and session_id.
         """
+        session_id = validate_session_id(agent.coding_agent, session_id)
         ts = now_iso()
         self.conn.execute(
             "INSERT INTO agent_sessions (adw_id, agent, coding_agent, model, color,"

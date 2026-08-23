@@ -20,7 +20,8 @@ from .harness_process import (ProcessOutcome, ProcessSpec, ensure_executable,
                               require_effort, run_jsonl_process)
 from .harness_types import (HarnessConfigError, HarnessEvent, HarnessName,
                             HarnessProcessError, HarnessProfile, HarnessRequest,
-                            HarnessResult, ProcessCallback, UsageBreakdown)
+                            HarnessResult, ProcessCallback, UsageBreakdown,
+                            validate_session_id)
 from .utils import new_id, now_iso, operator_env
 
 PI_PATH = os.environ.get("PI_PATH", "pi")
@@ -420,7 +421,7 @@ def _require_pi_profile(profile: HarnessProfile) -> None:
 
 def _require_session_id(request: HarnessRequest) -> str:
     if request.session_id:
-        return request.session_id
+        return validate_session_id("pi", request.session_id)
     raise HarnessConfigError("pi", request.session_id, "a non-empty Pi session ID")
 
 

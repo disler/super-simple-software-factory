@@ -13,7 +13,7 @@ from .harness_process import (ProcessOutcome, ProcessSpec, ensure_executable,
 from .harness_types import (HarnessConfigError, HarnessEvent, HarnessName,
                             HarnessProcessError, HarnessProfile, HarnessProtocolError,
                             HarnessRequest, HarnessResult, ProcessCallback,
-                            UsageBreakdown)
+                            UsageBreakdown, validate_session_id)
 
 CODEX_PATH = os.environ.get("CODEX_PATH", "codex")
 CODEX_EFFORTS: frozenset[str] = frozenset({"minimal", "low", "medium", "high", "xhigh"})
@@ -158,7 +158,7 @@ class CodexEventParser:
     def _record_thread(self, event: Mapping[str, object]) -> None:
         thread_id = event.get("thread_id")
         if isinstance(thread_id, str) and thread_id:
-            self._result.session_id = thread_id
+            self._result.session_id = validate_session_id("codex", thread_id)
 
     def _record_item(self, event: Mapping[str, object]) -> None:
         item = _object_map(event.get("item"))
@@ -204,7 +204,9 @@ class CodexAdapter:
 
         Example: ``adapter.run(request, on_event=record_event)`` streams tool events.
         """
-        result = HarnessResult(session_id=request.session_id or "")
+        session_id = (validate_session_id("codex", request.session_id)
+                      if request.session_id else "")
+        result = HarnessResult(session_id=session_id)
         parser = CodexEventParser(result, on_event)
         outcome = run_jsonl_process(_process_spec(request), parser.observe, on_spawn, on_exit)
         result.returncode = outcome.returncode

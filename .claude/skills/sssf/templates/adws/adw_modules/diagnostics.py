@@ -14,10 +14,12 @@ SENSITIVE_ENV_KEY = re.compile(
 RICH_TAG = re.compile(r"(\[/?[a-z][^\]]*\])", re.I)
 BEARER_VALUE = re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{6,}", re.I)
 AUTHORIZATION = re.compile(
-    r"\b(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;]+", re.I)
-ASSIGNMENT = re.compile(
-    r"\b((?:api[_-]?key|access[_-]?token|token|secret|password|passwd|"
-    r"authorization|auth|credential|cookie)\s*[:=]\s*)(?:['\"])?[^\s,'\";]+", re.I)
+    r"\b(?P<prefix>authorization\s*[:=]\s*)(?:(?P<quote>['\"])(?:bearer\s+)?"
+    r"[^'\"]*(?P=quote)|(?:bearer\s+)?[^\s,;\[<]+)", re.I)
+CREDENTIAL_PAIR = re.compile(
+    r"(?P<prefix>(?:['\"])?(?:api[_-]?(?:token|key)|access[_-]?token|authorization|"
+    r"token|key|secret|password|passwd|auth|credential|cookie)(?:['\"])?\s*[:=]\s*)"
+    r"(?:\"(?P<double>[^\"]*)\"|'(?P<single>[^']*)'|(?P<bare>[^\s,;}\]\[<]+))", re.I)
 URL_CREDENTIALS = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^@\s/]+@", re.I)
 API_TOKEN = re.compile(
     r"\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{8,}|sk-ant-[A-Za-z0-9_-]{8,}|"
@@ -48,9 +50,9 @@ def sanitize_text(text: str) -> str:
     """
     redacted = _redact_environment_values(text)
     redacted = URL_CREDENTIALS.sub(r"\1" + REDACTED + "@", redacted)
-    redacted = AUTHORIZATION.sub(r"\1" + REDACTED, redacted)
+    redacted = AUTHORIZATION.sub(_redact_authorization, redacted)
     redacted = BEARER_VALUE.sub("Bearer " + REDACTED, redacted)
-    redacted = ASSIGNMENT.sub(r"\1" + REDACTED, redacted)
+    redacted = CREDENTIAL_PAIR.sub(_redact_credential_pair, redacted)
     return API_TOKEN.sub(REDACTED, redacted)
 
 
@@ -69,6 +71,20 @@ def _sanitize_mapping(value: Mapping[object, object]) -> dict[str, object]:
         sanitized[label] = (REDACTED if _is_secret_entry(label, item)
                             else sanitize_diagnostic(item))
     return sanitized
+
+
+def _redact_credential_pair(match: re.Match[str]) -> str:
+    if match.group("double") is not None:
+        return match.group("prefix") + '"' + REDACTED + '"'
+    if match.group("single") is not None:
+        return match.group("prefix") + "'" + REDACTED + "'"
+    return match.group("prefix") + REDACTED
+
+
+def _redact_authorization(match: re.Match[str]) -> str:
+    quote = match.group("quote")
+    value = f"{quote}{REDACTED}{quote}" if quote else REDACTED
+    return match.group("prefix") + value
 
 
 def _is_secret_entry(key: str, value: object) -> bool:

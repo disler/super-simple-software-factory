@@ -22,7 +22,7 @@ from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
 from .diagnostics import sanitize_diagnostic
 from .harness_types import (HarnessError, HarnessEvent, HarnessProfile,
                             HarnessAdapter, HarnessName, HarnessRequest, HarnessResult,
-                            UsageBreakdown)
+                            UsageBreakdown, validate_session_id)
 from .harness_registry import get_adapter
 from .repository_snapshot import RepositorySnapshot
 
@@ -362,7 +362,7 @@ def reusable_session(entry: dict[str, object] | None, agent: AgentConfig) -> str
     if recorded_harness != agent.coding_agent or entry.get("model") != agent.model:
         return None
     session_id = entry.get("session_id")
-    return str(session_id) if session_id else None
+    return validate_session_id(agent.coding_agent, str(session_id)) if session_id else None
 
 
 def save_session(run: "Run", agent: AgentConfig, session_id: str) -> None:
@@ -370,8 +370,9 @@ def save_session(run: "Run", agent: AgentConfig, session_id: str) -> None:
 
     Example: ``save_session(run, agent, "thread-1")`` records the active thread.
     """
+    validated_id = validate_session_id(agent.coding_agent, session_id)
     run.save_agent_map(agent.name, {
-        "session_id": session_id,
+        "session_id": validated_id,
         "model": agent.model,
         "coding_agent": agent.coding_agent,
         "effort": agent.effort,

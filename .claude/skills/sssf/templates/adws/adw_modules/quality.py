@@ -64,7 +64,7 @@ def _run(spec: QualityCheckSpec, run) -> QualityCheckResult:
     phase = run.phases[-1]
     output_dir = _check_dir(run, spec.name)
     output_artifact = output_dir / "command.log"
-    command = shlex.join(spec.argv)
+    command = shlex.join([sanitize_text(argument) for argument in spec.argv])
     env = operator_env()             # the engineer's own shell environment
 
     run.console.note(f"quality {spec.name}: {command}")

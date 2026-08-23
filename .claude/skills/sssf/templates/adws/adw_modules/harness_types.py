@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from typing import Callable, Literal, Protocol
+from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -12,6 +14,7 @@ HarnessName = Literal["pi", "claude_code", "codex"]
 PortableCapability = Literal["read", "search", "shell", "write", "edit"]
 SandboxAccess = Literal["read-only", "workspace-write"]
 ProcessCallback = Callable[[int], None]
+PI_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
 
 class UsageBreakdown(BaseModel):
@@ -133,6 +136,35 @@ class HarnessProtocolError(HarnessError):
     """Raised when harness output does not match its documented protocol."""
 
     category = "protocol"
+
+
+def validate_session_id(harness: HarnessName, session_id: str) -> str:
+    """Validate an operational harness identifier before it can be resumed.
+
+    Example: ``validate_session_id("codex", "123e4567-e89b-12d3-a456-426614174000")``.
+    """
+    valid = (_canonical_uuid(session_id)
+             if harness in {"claude_code", "codex"} else _pi_id(session_id))
+    if valid:
+        return session_id
+    raise HarnessProtocolError(harness, session_id, _session_id_shape(harness))
+
+
+def _canonical_uuid(session_id: str) -> bool:
+    try:
+        return str(UUID(session_id)) == session_id
+    except ValueError:
+        return False
+
+
+def _pi_id(session_id: str) -> bool:
+    return bool(PI_SESSION_ID.fullmatch(session_id)) and sanitize_text(session_id) == session_id
+
+
+def _session_id_shape(harness: HarnessName) -> str:
+    if harness in {"claude_code", "codex"}:
+        return "a canonical lowercase UUID session ID"
+    return "a 1-128 character Pi identifier using letters, digits, underscores, and hyphens"
 
 
 class HarnessAdapter(Protocol):
