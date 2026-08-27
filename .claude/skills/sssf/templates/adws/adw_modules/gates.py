@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from fnmatch import fnmatch
 from pathlib import Path
 
+from . import git_helper
 from .data_types import EnvelopeBase, GateReport
 
 TAIL_CHARS = 1000        # command output kept as evidence on a failure
@@ -58,13 +60,46 @@ def json_parses(envelope: EnvelopeBase, run) -> GateReport:
     return report
 
 
-def diff_matches_claims(envelope: EnvelopeBase, run) -> GateReport:
-    """Every file claimed changed must exist on disk."""
+def diff_matches_claims(envelope: EnvelopeBase, run,
+                        ignore: tuple[str, ...] = ()) -> GateReport:
+    """The claimed change set and the actual change set must be the same set.
+
+    Two directions, because either mismatch is a real defect: a claim that did
+    not happen (a file listed as changed but never touched), and a change nobody
+    claimed (the second is what rides into `git_helper.commit_all()`, which
+    stages the whole working tree). Existence alone is not enough — a builder
+    that lists an untouched file, or hides an unexpected one, goes green.
+    """
     report = GateReport()
-    for f in getattr(envelope, "changed_files", []):
-        p = Path(f)
-        report.check(f, p.exists(),
-                     f"exists, {_size(p)}" if p.exists() else "claimed changed file does not exist")
+    claimed = {f.lstrip("./") for f in getattr(envelope, "changed_files", [])}
+
+    if not git_helper.is_repo():
+        # No git repo: there is no diff to reconcile against, so fall back to
+        # the existence check — the only mechanical fact available here.
+        for f in sorted(claimed):
+            p = Path(f)
+            report.check(f, p.exists(),
+                         f"exists, {_size(p)}" if p.exists()
+                         else "claimed changed file does not exist")
+        return report
+
+    actual = {f.lstrip("./") for f in git_helper.changed_files()}
+
+    for f in sorted(claimed):
+        report.check(f, f in actual,
+                     "claimed and changed" if f in actual
+                     else "claimed but not in the diff")
+
+    unclaimed = sorted(f for f in actual - claimed
+                       if not any(fnmatch(f, pattern) for pattern in ignore))
+    for f in unclaimed[:20]:
+        report.check(f, False, "changed but not claimed")
+    if len(unclaimed) > 20:
+        report.check(f"…{len(unclaimed) - 20} more", False,
+                     f"{len(unclaimed)} unclaimed changed files in total")
+    if not unclaimed:
+        report.check("diff ⊆ claims", True,
+                     f"no unclaimed changes among {len(actual)} changed file(s)")
     return report
 
 
