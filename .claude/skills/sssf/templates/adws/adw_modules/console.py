@@ -50,7 +50,8 @@ class Console:
         self._emit(f"[bold cyan]adw_id:[/bold cyan] [bold]{escape(adw_id)}[/bold]"
                    f"   [dim]engineer[/dim] {escape(engineer)}")
 
-    def session_finished(self, ok: bool, tokens: int, cost: float, db_path: str) -> None:
+    def session_finished(self, ok: bool, tokens: int, cost: float, db_path: str,
+                         credits: float = 0.0) -> None:
         if self._finished:
             return
         self._finished = True
@@ -59,15 +60,20 @@ class Console:
         rows = [f" [dim]status[/dim]   {status}",
                 f" [dim]phases[/dim]   {passed}/{len(self.results)} passed",
                 f" [dim]tokens[/dim]   {tokens:,}",
-                f" [dim]cost[/dim]     ${cost:.4f}",
-                f" [dim]adw_id[/dim]   {escape(self.adw_id)}",
-                f" [dim]db[/dim]       {escape(str(db_path))}",
-                f" [dim]next[/dim]     [bold]just phases {escape(self.adw_id)}[/bold]"]
+                f" [dim]cost[/dim]     ${cost:.4f}"]
+        # Only when a harness actually billed in credits: an all-dollar roster
+        # should not grow a row that is always 0.
+        if credits:
+            rows.append(f" [dim]credits[/dim]  {credits:.4f}")
+        rows += [f" [dim]adw_id[/dim]   {escape(self.adw_id)}",
+                 f" [dim]db[/dim]       {escape(str(db_path))}",
+                 f" [dim]next[/dim]     [bold]just phases {escape(self.adw_id)}[/bold]"]
         panel = Panel(Text.from_markup("\n".join(rows)),
                       title="[bold]ADW complete[/bold]",
                       border_style="green" if ok else "red", expand=False)
         plain = (f"session {self.adw_id} {'success' if ok else 'fail'} · "
-                 f"{passed}/{len(self.results)} phases · {tokens:,} tokens · ${cost:.4f}")
+                 f"{passed}/{len(self.results)} phases · {tokens:,} tokens · ${cost:.4f}"
+                 + (f" · {credits:.4f} credits" if credits else ""))
         self._emit(escape(plain), level="info" if ok else "error", renderable=panel)
 
     # ── phases ──────────────────────────────────────────────────────────────
@@ -100,8 +106,14 @@ class Console:
         self._emit(f"  [magenta]▸[/magenta] {escape(name)} [dim]{escape(model)}[/dim]"
                    f"  [dim]session {escape(session_id)}[/dim]")
 
-    def agent_finished(self, name: str, tokens: int, cost: float) -> None:
-        self._emit(f"  [dim]└ {escape(name)} used {tokens:,} tokens · ${cost:.4f}[/dim]")
+    def agent_finished(self, name: str, tokens: int, cost: float,
+                       credits: float = 0.0) -> None:
+        spent = f"{tokens:,} tokens · ${cost:.4f}"
+        # A Kiro phase reports no tokens at all, so without this the line reads
+        # "used 0 tokens · $0.0000" for work that was genuinely billed.
+        if credits:
+            spent += f" · {credits:.4f} credits"
+        self._emit(f"  [dim]└ {escape(name)} used {spent}[/dim]")
 
     def retry(self, name: str, attempt: int, limit: int, reason: str) -> None:
         self._emit(f"  [yellow]⟳[/yellow] {escape(name)} retry {attempt}/{limit} "

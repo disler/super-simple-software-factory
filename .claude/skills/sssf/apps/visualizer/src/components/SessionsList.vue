@@ -3,12 +3,13 @@ import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import type { SessionSummary } from '../lib/types'
 import { fetchSessions } from '../lib/api'
 import { ts } from '../lib/format'
+import { serverNow } from '../lib/clock'
 import SessionCard from './SessionCard.vue'
 
 const sessions = shallowRef<SessionSummary[]>([])
 const apiError = ref<string | null>(null)
 const loaded = ref(false)
-const nowMs = ref(Date.now())
+const nowMs = ref(serverNow())
 
 let timer: ReturnType<typeof setInterval> | undefined
 let inflight = false
@@ -18,7 +19,7 @@ async function tick() {
   inflight = true
   try {
     sessions.value = await fetchSessions()
-    nowMs.value = Date.now()
+    nowMs.value = serverNow()
     apiError.value = null
     loaded.value = true
   } catch (err) {

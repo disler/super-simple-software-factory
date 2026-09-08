@@ -23,6 +23,7 @@ import {
   SquareTerminal,
 } from 'lucide-vue-next'
 import { fmtClock, payloadOk, ts } from '../lib/format'
+import { serverNow } from '../lib/clock'
 import { highlightJson, highlightJsonText } from '../lib/highlight'
 import { eventLabel, parseAgentStart, parseToolCall } from '../lib/events'
 import { modelIcon, modelName } from '../lib/models'
@@ -153,7 +154,7 @@ const requestText = computed(() => {
 const phaseDurationMs = computed(() => {
   const start = ts(props.phase.started_at)
   if (!Number.isFinite(start)) return NaN
-  const end = props.phase.status === 'running' ? Date.now() : ts(props.phase.ended_at)
+  const end = props.phase.status === 'running' ? serverNow() : ts(props.phase.ended_at)
   return Number.isFinite(end) ? end - start : NaN
 })
 
@@ -805,7 +806,7 @@ function togglePanel(id: string) {
   padding: 2px 12px;
   border: 1px solid var(--border-soft);
   border-radius: 999px;
-  background: rgba(19, 26, 38, 0.6);
+  background: var(--panel-2);
   font-family: var(--mono);
   font-size: 16px;
   overflow-wrap: anywhere;
@@ -1020,7 +1021,7 @@ h3:first-child {
 }
 
 .tag-fail {
-  border-color: rgba(255, 111, 103, 0.55);
+  border-color: var(--red);
 }
 
 .tag-fail .tag-v {
@@ -1238,7 +1239,7 @@ h3:first-child {
   border: 1px solid var(--border-soft);
   border-radius: 8px;
   padding: 10px 12px;
-  background: rgba(6, 8, 15, 0.55);
+  background: var(--panel-3);
   max-height: 42vh;
   overflow: auto;
 }

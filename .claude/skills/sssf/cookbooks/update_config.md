@@ -8,13 +8,13 @@ Edit the agent's entry in place:
 
 ```yaml
   - name: builder
-    model: google/gemini-3.6-flash   # ALWAYS provider/model-id
+    model: sonnet
     thinking: high                   # was medium
 ```
 
-Write the model as `provider/model-id`, never a bare id. The same model is usually carried by several providers, and an ambiguous pattern raises in `agents.validate()` — grounding every agent that inherits it. See `references/config.md`.
+Use the model syntax expected by the selected harness: Claude Code aliases such as `sonnet`, Codex ids such as `gpt-5.6-terra`, and qualified `provider/model-id` values for Pi. See `references/config.md`.
 
-Thinking levels are Pi's reasoning effort: `off | minimal | low | medium | high | xhigh | max`. It only bites when the model is registered with `reasoning: true` in `~/.pi/agent/models.json`.
+Thinking support also depends on the harness. Claude Code accepts `low | medium | high | xhigh | max`; Codex and Pi apply their own supported levels.
 
 **A model change means a fresh session.** `agent_map.json` records the model each coding-agent session was created with. When a joined run (`--adw-id`) finds the config's model no longer matches the recorded one, that agent starts a **new** session rather than resuming — the map is updated, never a bad resume. Thinking changes do not invalidate a session; model changes do. Expect the agent to lose its accumulated context window on the first run after the change.
 

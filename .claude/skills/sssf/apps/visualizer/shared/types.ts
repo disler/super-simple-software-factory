@@ -39,6 +39,8 @@ export interface Session {
   ended_at: string | null;
   total_tokens: number | null;
   total_cost: number | null;
+  /** Non-dollar billing units reported by harnesses such as Kiro CLI. */
+  total_credits: number | null;
   /** 1 once archived out of the review list. Review state, not run state. */
   archived: number | null;
 }

@@ -1,31 +1,30 @@
 # sssf.config.yaml — the factory's agent roster. One agent, one prompt, one purpose.
-# v1 runs the Pi coding agent only; coding_agent: claude_code arrives in v2.
+# The starter roster runs Claude Code Sonnet, with Codex GPT-5.6 Terra for
+# review. Each agent may still select pi | claude_code | codex | kiro_cli |
+# antigravity independently — see references/config.md#harnesses.
 defaults:
-  coding_agent: pi
-  model: google/gemini-3.6-flash   # provider/id — a bare pattern is ambiguous across providers
+  coding_agent: claude_code
+  model: sonnet
   thinking: medium                 # off | minimal | low | medium | high | xhigh | max
-  harness_engineering: []          # pi extensions loaded into the harness (-e)
+  harness_engineering: []          # Pi-only extensions; empty for Claude Code and Codex
   # Roster-wide allowlist; any agent may override with its own list.
-  # NOTE: --tools filters extension and custom tools too, not just builtins. An agent
-  # whose harness_engineering extension registers a tool MUST name that tool in its own
-  # tools list — otherwise the extension loads and its tool is silently filtered out.
+  # Keep this list to names that Claude Code's adapter can map directly.
   tools:
     - read                         # read file contents
     - bash                         # execute bash commands
     - edit                         # find/replace edits
     - write                        # create/overwrite files
-    - grep                         # search file contents  (pi default: OFF)
-    - find                         # find files by glob     (pi default: OFF)
-    - ls                           # list directories       (pi default: OFF)
+    - grep                         # search file contents
+    - find                         # find files by glob
   # Off-limits to every agent that does not name them in its own `writes`.
   # `tools` alone cannot protect these: bash runs `git checkout`, and write
   # reaches any path. An agent must not be able to edit the machinery that
   # decides whether its own work passed. Enforced in adw_modules/permissions.py.
   #
-  # `writes:` per agent says what it may change IN THE REPO. It never restricts
-  # the session runtime under data_dir — context_handoff/, envelopes, prompts,
-  # raw output. Every agent can always write its own report; `writes: []` means
-  # read-only with respect to the repo, not mute.
+  # `writes:` per agent says what it may change IN THE REPO. Only this run's
+  # {data_dir}/sessions/{adw_id}/ runtime is exempt, including context_handoff/.
+  # Active system/user prompts are always protected; broad globs do not unlock
+  # them. `writes: []` means read-only with respect to the repo, not mute.
   protected_files:
     - adws/adw_modules/
     - adws/adw_sssf_config/
@@ -38,28 +37,20 @@ observability:
 
 agents:
   - name: planner
-    model: fireworks/accounts/fireworks/models/kimi-k3
     thinking: high
     color: "#a78bfa"                 # optional hex — the agent's lane color in the visualizer
     purpose: Turn a request into a plan the builder can implement without asking questions.
     prompt_engineering:
       system: adws/adw_data/prompt_engineering/planner/system.md
       user: adws/adw_data/prompt_engineering/planner/user.md
-    harness_engineering:
-      - adws/adw_data/harness_engineering/subagents.ts    # registers the four subagent_* tools below
     writes:                        # the plan is the only thing it may leave in the repo
       - specs/
     tools:                         # full recon + write for plan.md; no edit — the planner never touches repo files
       - read
       - grep
       - find
-      - ls
       - bash
       - write
-      - subagent_create            # extension tools MUST be named here or they are filtered out
-      - subagent_continue
-      - subagent_list
-      - subagent_remove
 
   - name: builder
     color: "#22d3ee"
@@ -73,7 +64,6 @@ agents:
       - read
       - grep
       - find
-      - ls
       - bash
       - edit
       - write
@@ -84,27 +74,21 @@ agents:
     prompt_engineering:
       system: adws/adw_data/prompt_engineering/scout/system.md
       user: adws/adw_data/prompt_engineering/scout/user.md
-    harness_engineering:
-      - adws/adw_data/harness_engineering/subagents.ts    # registers the four subagent_* tools below
     writes: []                     # read-only, and now actually read-only: its findings
                                    # go to context_handoff/, which is runtime, not the repo
     tools:                         # search-heavy recon; write only so scout_findings.md lands without a bash heredoc
       - read
       - grep
       - find
-      - ls
       - bash
       - write
-      - subagent_create            # extension tools MUST be named here or they are filtered out
-      - subagent_continue
-      - subagent_list
-      - subagent_remove
 
   # No tester agent: running the suite is a known command, so it is a kind="code"
   # phase over adw_modules/quality.py. See SKILL.md hard rule 8.
 
   - name: reviewer
-    model: openai/gpt-5.6-terra
+    coding_agent: codex
+    model: gpt-5.6-terra
     thinking: high
     color: "#fb7185"
     purpose: Confirm that what was built is what was asked for; change nothing.
@@ -113,16 +97,9 @@ agents:
       user: adws/adw_data/prompt_engineering/reviewer/user.md
     writes: []                     # a reviewer that cannot fix cannot quietly fix — the
                                    # claim the tool list only implied, now enforced
-    tools:                         # full read surface; write only for review.md, no edit
-      - read
-      - grep
-      - find
-      - ls
-      - bash
-      - write
+    tools: null                    # Codex CLI has no tool allowlist flag
 
   - name: documenter
-    model: openai/gpt-5.6-luna
     color: "#e879f9"
     purpose: Write up the change that was just made, from the diff; document only.
     prompt_engineering:
@@ -137,7 +114,6 @@ agents:
       - read
       - grep
       - find
-      - ls
       - bash
       - write
       - edit

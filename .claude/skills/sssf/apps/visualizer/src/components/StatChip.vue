@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { BookOpen, CircleDollarSign, Coins, PenLine, Timer } from 'lucide-vue-next'
-import { fmtCost, fmtDuration, fmtTokens } from '../lib/format'
+import { BookOpen, CircleDollarSign, Coins, PenLine, Sparkles, Timer } from 'lucide-vue-next'
+import { fmtCost, fmtCredits, fmtDuration, fmtTokens } from '../lib/format'
 
 const props = defineProps<{
-  kind: 'cost' | 'tokens' | 'runtime' | 'read' | 'written'
-  /** Raw value — cost in dollars, tokens as a count, runtime in milliseconds. */
+  kind: 'cost' | 'credits' | 'tokens' | 'runtime' | 'read' | 'written'
+  /** Raw value — dollars, credits, tokens, or runtime in milliseconds. */
   value: number | null | undefined
   /** Bare value, no pill chrome — for tight spots like waterfall blocks. */
   compact?: boolean
@@ -13,6 +13,7 @@ const props = defineProps<{
 
 const ICONS = {
   cost: CircleDollarSign,
+  credits: Sparkles,
   tokens: Coins,
   runtime: Timer,
   read: BookOpen,
@@ -23,6 +24,7 @@ const ICONS = {
 // wrong without one — the headline is billed volume, not distinct tokens.
 const TITLES = {
   cost: 'Cost — dollars billed for this run, all agents combined.',
+  credits: 'Credits billed for this run, all agents combined.',
   tokens:
     'Tokens exchanged (billed) — everything sent or generated, counted once per turn. ' +
     'Each turn re-sends the whole conversation, so this is far larger than the ' +
@@ -40,6 +42,7 @@ const TITLES = {
 
 const text = computed(() => {
   if (props.kind === 'cost') return fmtCost(props.value)
+  if (props.kind === 'credits') return fmtCredits(props.value)
   if (props.kind === 'runtime') return fmtDuration(props.value ?? NaN)
   return fmtTokens(props.value)
 })
@@ -60,7 +63,7 @@ const text = computed(() => {
   padding: 3px 12px;
   border: 1px solid var(--border-soft);
   border-radius: 999px;
-  background: rgba(19, 26, 38, 0.6);
+  background: var(--panel-2);
   font-size: 16px;
   white-space: nowrap;
 }

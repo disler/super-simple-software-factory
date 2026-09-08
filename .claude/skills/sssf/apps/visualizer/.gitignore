@@ -1,0 +1,14 @@
+# The visualizer is stamped INSIDE the target repo, so everything bun and vite
+# generate here lands in that repo's working tree. permissions.snapshot() reads
+# untracked files with `git ls-files --others --exclude-standard`, so an
+# unignored artifact tree is indistinguishable from an agent writing to the repo:
+# `just obs` runs `bun install`, and a run watched that way had its planner phase
+# killed by a 5671-path breach whose rollback unlinked every dependency file.
+#
+# This lives beside the app rather than in the root .gitignore so the scope is
+# exactly the visualizer — a root-level `dist/` would also swallow build output
+# belonging to the host repo. It travels with the app to every integration
+# directory, so .claude, .agents, and .kiro are covered without naming any.
+node_modules/
+dist/
+*.tsbuildinfo

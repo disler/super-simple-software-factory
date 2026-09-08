@@ -33,6 +33,12 @@ function json(data: unknown, status = 200): Response {
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+      // This process runs beside the db it reads, so its clock is the one that
+      // wrote every timestamp in the trace. The browser's may be somewhere else
+      // entirely — see src/lib/clock.ts for what that costs a live timer.
+      // Sent with millisecond precision on purpose: HTTP's own `Date` header is
+      // whole seconds, enough to make a phase's first second read negative.
+      "x-sssf-now": new Date().toISOString(),
     },
   });
 }

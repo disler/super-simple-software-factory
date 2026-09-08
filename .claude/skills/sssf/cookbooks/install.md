@@ -1,14 +1,14 @@
 # Install
 
-`/sssf install` — stamp the entire factory out of the skill and into the current working directory.
+`sssf install` — stamp the entire factory out of the skill and into the current working directory. Invoke it as `/sssf install` in Claude Code or `$sssf install` in Codex.
 
 ## Run it
 
 ```bash
-uv run .claude/skills/sssf/scripts/install.py
+uv run <skill-dir>/scripts/install.py
 ```
 
-Run from the **target repo root** — the cwd is where everything lands. If the skill lives in your user scope, the path is `~/.claude/skills/sssf/scripts/install.py`.
+Run from the **target repo root** — the cwd is where everything lands. The repository-local skill directory is `.claude/skills/sssf` for Claude Code, `.agents/skills/sssf` for Codex, and `.kiro/skills/sssf` for Kiro CLI. The installer preserves the integration from which it is invoked.
 
 ## What gets stamped
 
@@ -31,14 +31,14 @@ The two `*_engineering` dirs mirror the two config keys of the same name: `promp
 
 ## Idempotency
 
-Re-running is safe. `install.py` skips **every** file that already exists — your config, your prompts, and previously stamped code alike — and reports what it skipped, so a second run doubles as a drift check. To refresh stamped code (`adw_modules/`, the starter `adw_*.py`) to the skill's current version, run with `--force` — but know that `--force` overwrites ALL existing stamped files, including `sssf.config.yaml` and `prompt_engineering/`, so commit or back up user-owned edits first.
+Re-running is safe. `install.py` preserves existing files — your config, prompts, and previously stamped code alike — while applying narrowly defined migrations for obsolete generated paths. It reports what it skipped, so a second run doubles as a drift check. To refresh stamped code (`adw_modules/`, the starter `adw_*.py`) to the skill's current version, run with `--force` — but know that `--force` overwrites ALL existing stamped files, including `sssf.config.yaml` and `prompt_engineering/`, so commit or back up user-owned edits first.
 
 ## Post-install checklist
 
-1. **Env** — `cp .env.sample .env`, then set `OPENROUTER_API_KEY` in `.env`. (v1 runs Pi; `ANTHROPIC_API_KEY` / `CLAUDE_CODE_PATH` are only needed once Claude Code lands in v2.)
-2. **Pi is installed and on PATH** — `pi --version`. Set `PI_PATH` in `.env` if it is not.
-3. **The model resolves** — the config's default `gemini-3.6-flash` must be a registered id in `~/.pi/agent/models.json`. Check with `pi --list-models` or read the file directly; see `references/config.md` for model resolution.
-4. **Gitignore** — `install.py` appends `adws/adw_data/sessions/`, `adws/adw_data/sssf.db*`, and `.env` for you; confirm they landed. All three are runtime or secrets and must never be committed.
+1. **CLIs** — the starter roster needs authenticated `claude` and `codex` commands on PATH. Set `CLAUDE_PATH` or `CODEX_PATH` in `.env` only when the executable is elsewhere.
+2. **Models** — confirm Claude Code accepts `sonnet` and Codex accepts `gpt-5.6-terra` for the logged-in accounts.
+3. **Env** — `.env` is optional for the starter roster. Copy `.env.sample` only when adding path overrides or Pi provider keys.
+4. **Gitignore** — `install.py` appends `adws/adw_data/sessions/`, `adws/adw_data/sssf.db*`, `.env`, `__pycache__/`, `*.pyc`, and `node_modules/` for you; confirm they landed. They are runtime, bytecode, dependencies, or secrets, and must never be committed. `node_modules/` is not cosmetic: `permissions.snapshot()` lists untracked files, so an unignored dependency tree that appears mid-run is attributed to the agent and rolled back file by file. The stamped visualizer carries its own `.gitignore` for the same reason.
 5. **Git repo** — ADWs that end in a commit phase call `git_helper.commit_all`, which raises if the cwd is not a git repository. Run `git init` and make a first commit before using `adw_plan_build.py`, `adw_plan_build_test.py`, or `adw_simple_sdlc.py`. `adw_document.py` needs one too: it measures the change with `git diff` against a base ref (`main` by default, `--base` to override).
 6. **Smoke test** — `just demo` runs two cheap read-only workflows back to back, or run the smallest ADW directly:
 

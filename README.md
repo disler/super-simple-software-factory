@@ -50,28 +50,22 @@ The bill for skipping this is not only tokens. It is cost, speed, and consistenc
 
 ## Install
 
-Two steps: get the skill into your repo, then stamp the factory.
+Run the repository installer from the **target repo root** and select the host that should operate SSSF. This integration choice does not change the `coding_agent` configured for any workflow agent.
 
-### Agentic Install
-
-Copy `.claude/skills/sssf/` into the target repo and type `/sssf install` inside Claude Code. The skill is named `sssf`, so that is the skill name followed by the `install` argument. There is no bare `/install` command. The agent reads the skill's own `cookbooks/install.md` and does the rest.
-
-### Manual Install
-
-**Prereqs:** [`uv`](https://docs.astral.sh/uv/), [`pi`](https://github.com/mariozechner/pi-coding-agent), `sqlite3`, and an API key for whichever providers your roster names (see below). [`bun`](https://bun.sh) only if you want the visualizer.
+**Prereqs:** [`uv`](https://docs.astral.sh/uv/), `sqlite3`, and the CLI used by each agent in your roster (`pi`, `claude`, `codex`, `kiro-cli`, or `agy`), already authenticated. [`bun`](https://bun.sh) is only needed for the visualizer.
 
 ```bash
-# 1. get the skill into the target repo
-mkdir -p .claude/skills
-cp -r /path/to/super-simple-software-factory/.claude/skills/sssf .claude/skills/
+# from the target repo root
+uv run /path/to/super-simple-software-factory/install.py --integration codex
+# or: --integration claude
+# or: --integration kiro
+# or: --integration none
 
-# 2. stamp the factory (run from the target repo ROOT, the cwd is where everything lands)
-uv run .claude/skills/sssf/scripts/install.py
-cp .env.sample .env                              # then set OPENROUTER_API_KEY
-pi --version                                     # confirm pi is on PATH, or set PI_PATH in .env
-git init && git commit --allow-empty -m init     # chains that end in a commit phase need a repo
+claude --version                                 # starter agents
+codex --version                                  # starter reviewer
+git init && git add -A && git commit -m "stamp sssf"   # commit the factory BEFORE the first chain
 
-# 3. smoke test: two cheap read-only runs, end to end
+# smoke test: two cheap read-only runs, end to end
 just demo
 just sessions              # what just happened
 just obs                   # the trace UI, needs bun
@@ -80,25 +74,28 @@ just obs                   # the trace UI, needs bun
 uv run adws/adw_prompt.py "reply with a one-line summary of this repo" --agent scout
 ```
 
-Re-running `install.py` is safe. It skips every file that already exists and reports what it skipped, so a second run doubles as a drift check. `--force` refreshes stamped code to the skill's current version, but it overwrites **all** stamped files including your `sssf.config.yaml` and your prompts, so commit first.
+`--integration codex` installs the repo-local skills at `.agents/skills/`, where Codex exposes them as `$sssf`, `$sssf-grill-me`, and `$sssf-pick-models`. `--integration claude` installs them at `.claude/skills/`, where Claude Code exposes them as `/sssf`, `/sssf-grill-me`, and `/sssf-pick-models`. `--integration kiro` installs them at `.kiro/skills/`, where Kiro CLI exposes the same three — its default agent already carries `skill://.kiro/skills/*/SKILL.md`, so nothing needs configuring. `none` installs only the factory.
 
-Green on the smoke test means the whole path works: config validated, session minted, Pi ran, envelope parsed, events landed in `adws/adw_data/sssf.db`. Fix it there before composing anything larger, because every multi-agent chain rides this exact path.
+Use `sssf-grill-me` when the initial request still needs product decisions. It inspects the relevant code, interviews the developer, and writes an approved `specs/YYYY-MM-DD-<slug>.md` without changing the application. Its instructions use only capabilities shared by coding harnesses, so the output contract is the same in Claude Code, Codex, and Kiro CLI.
 
-### Which API keys you actually need
+Use `sssf-pick-models` right after installing, to decide which harness and model runs each agent. It carries the model tables for all five harnesses, shows what each role is actually buying, and writes the result into `sssf.config.yaml` with the keys a harness switch forces — the `tools: null` that codex, kiro_cli, and antigravity all require, which is what makes a hand edit fail `agents.validate()`.
 
-That depends on your roster, not on this repo. Every `model:` in `sssf.config.yaml` is written `provider/model-id`, and the provider half decides the key. Which key pi reads for a given provider comes from `~/.pi/agent/models.json`.
+The full workflow accepts either an inline prompt or a specification path:
 
-The starter roster deliberately mixes providers to show the point, so out of the box it wants three:
+```bash
+just sssf "add a /health endpoint"
+just sssf specs/YYYY-MM-DD-<slug>.md
+```
 
-| Model in the starter roster | Provider | Key |
-|---|---|---|
-| `google/gemini-3.6-flash` (default, builder, scout) | served via openrouter | `OPENROUTER_API_KEY` |
-| `fireworks/accounts/fireworks/models/kimi-k3` (planner) | fireworks | `FIREWORKS_API_KEY` |
-| `openai/gpt-5.6-terra`, `openai/gpt-5.6-luna` (reviewer, documenter) | openai | `OPENAI_API_KEY` |
+Re-running `install.py` is safe. It preserves existing files, applies only narrowly defined migrations for obsolete generated paths, and reports what it skipped. `--force` refreshes stamped code and the selected integration, but it overwrites **all** stamped files including your `sssf.config.yaml` and your prompts, so commit first.
 
-**Want one key instead of three?** Delete the per-agent `model:` lines and let every agent inherit `defaults.model`. The whole roster then runs on one provider. Cheapest way to get a first green run.
+Green on the smoke test means the whole path works: config validated, a harness ran, the envelope parsed, and events landed in `adws/adw_data/sssf.db`. Fix it there before composing anything larger, because every multi-agent chain rides this exact path.
 
-One sharp edge worth knowing: `agents.validate()` checks that a model is *written* as `provider/id`, not that the provider is reachable or that its key is set. A missing key does not fail at startup. It fails when that agent runs, partway into a chain.
+### Credentials
+
+The starter roster uses Claude Code Sonnet for planner, builder, scout, and documenter, plus Codex GPT-5.6 Terra for review. Both CLIs must already be logged in; SSSF does not read their credentials.
+
+API keys in `.env` are only needed when you configure a Pi agent backed by an API provider.
 
 
 ---
@@ -123,7 +120,7 @@ There are three actors here, and the design keeps them separate on purpose: **th
   <img src="images/03_skill_stamp.svg" alt="The sssf skill directory on the left stamping config, adws, and prompt_engineering into three different target repos" width="780">
 </p>
 
-Everything lives in `.claude/skills/sssf/`. `SKILL.md` carries the hard rules and routes each request to one of nine cookbooks. `references/` holds the deep specs, `scripts/` holds the generators, `templates/` holds exactly what gets stamped.
+The same skill content is installed at `.claude/skills/sssf/` for Claude Code, `.agents/skills/sssf/` for Codex, or `.kiro/skills/sssf/` for Kiro CLI. Two harness-neutral companions are installed beside it: `sssf-grill-me`, which turns ambiguous requests into approved specifications before a workflow starts, and `sssf-pick-models`, which assigns a harness and model to each agent in the roster. SSSF's `SKILL.md` carries the hard rules and routes each request to one of nine cookbooks. `references/` holds the deep specs, `scripts/` holds the generators, and `templates/` holds exactly what gets stamped.
 
 | What lands in your repo | Where it comes from | Tracked |
 |---|---|---|
@@ -148,8 +145,8 @@ There is no DSL here. No framework to learn. It is Python, YAML, agents, and a s
 
 ```yaml
 defaults:
-  coding_agent: pi                 # v1 runs pi only, claude_code is schema-valid and stubbed
-  model: google/gemini-3.6-flash   # provider/model-id, a bare id can match several providers
+  coding_agent: claude_code        # pi | claude_code | codex | kiro_cli | antigravity
+  model: sonnet
   thinking: medium                 # off | minimal | low | medium | high | xhigh | max
   protected_files:                 # no agent may edit the machinery that grades it
     - adws/adw_modules/
@@ -159,17 +156,21 @@ defaults:
 
 agents:
   - name: planner
-    model: fireworks/accounts/fireworks/models/kimi-k3
     thinking: high                 # per-agent overrides win over defaults
     color: "#a78bfa"               # this agent's lane swatch in the trace
     purpose: Turn a request into a plan the builder can implement without asking questions.
     prompt_engineering:
       system: adws/adw_data/prompt_engineering/planner/system.md
       user: adws/adw_data/prompt_engineering/planner/user.md
-    harness_engineering:
-      - adws/adw_data/harness_engineering/subagents.ts   # this agent can spawn subagents
     writes:                        # the plan is all it may leave in the repo
       - specs/
+
+  - name: reviewer
+    coding_agent: codex
+    model: gpt-5.6-terra
+    thinking: high
+    tools: null
+    writes: []
 ```
 
 Five starter agents ship in the box: `planner`, `builder`, `scout` (read-only recon), `reviewer`, and `documenter`. There is no tester, because running a suite is a known command and therefore code.
@@ -268,10 +269,12 @@ That one cursor query is the entire transport. Live view and full history are th
 
 Files stay the raw record (`raw_output.jsonl`, `envelope.json`, `agent_map.json`). The db is the queryable mirror. Losing it loses nothing you cannot rebuild.
 
-The skill ships a read-only UI for this db at `.claude/skills/sssf/apps/visualizer/`: Vue and Vite served by Bun on port 4600, with sessions, a trace waterfall, and per-phase tool-call detail.
+The skill ships a read-only UI for this db under the selected integration directory: Vue and Vite served by Bun on port 4600, with sessions, a trace waterfall, and per-phase tool-call detail.
 
 ```bash
-cd .claude/skills/sssf/apps/visualizer && bun install
+cd .agents/skills/sssf/apps/visualizer && bun install   # Codex integration
+# Claude Code: .claude/skills/sssf/apps/visualizer
+# Kiro CLI:    .kiro/skills/sssf/apps/visualizer
 SSSF_DB=/abs/path/to/your-repo/adws/adw_data/sssf.db bun run server/index.ts &
 bunx vite
 ```
@@ -284,19 +287,23 @@ It resolves its target through `--db`, then `SSSF_DB`, then `<cwd>/adws/adw_data
 
 ```
 super-simple-software-factory/          # the deployable factory, and nothing else
-└── .claude/skills/sssf/
-    ├── SKILL.md                        # hard rules + request routing table
-    ├── cookbooks/                      # 9 orchestrator playbooks, loaded lazily
-    ├── references/                     # config / handoff / observability specs
-    ├── scripts/                        # install.py, make_config.py, make_adw.py
-    ├── apps/visualizer/                # the read-only trace UI (Vue + Vite on Bun)
-    └── templates/                      # EXACTLY what install.py stamps
-        ├── sssf.config.yaml            # the starter roster
-        ├── prompt_engineering/{agent}/ # system.md + user.md per agent
-        ├── harness_engineering/        # pi extensions
-        └── adws/
-            ├── adw_*.py                # the twelve starter workflows
-            └── adw_modules/            # ALL low-level logic, ADW scripts stay thin
+├── install.py                          # host-neutral installer entry point
+└── .claude/skills/
+    ├── sssf-grill-me/SKILL.md           # harness-neutral interview + SSSF spec
+    ├── sssf-pick-models/SKILL.md        # harness + model per agent, written into the roster
+    └── sssf/                            # canonical factory skill source
+        ├── SKILL.md                        # hard rules + request routing table
+        ├── cookbooks/                      # 9 orchestrator playbooks, loaded lazily
+        ├── references/                     # config / handoff / observability specs
+        ├── scripts/                        # install.py, make_config.py, make_adw.py
+        ├── apps/visualizer/                # the read-only trace UI (Vue + Vite on Bun)
+        └── templates/                      # EXACTLY what install.py stamps
+            ├── sssf.config.yaml            # the starter roster
+            ├── prompt_engineering/{agent}/ # system.md + user.md per agent
+            ├── harness_engineering/        # pi extensions
+            └── adws/
+                ├── adw_*.py                # the twelve starter workflows
+                └── adw_modules/            # ALL low-level logic, ADW scripts stay thin
 ```
 
 The skill is also what an agent reads to *operate* the factory. `SKILL.md` is the central idea, and the cookbooks are lazily loaded recipes it pulls in one at a time: set up the factory, create an ADW, modify a chain, add an agent, run and monitor. If you can teach an agent to do something, teach it, then go build the thing it cannot.
@@ -338,7 +345,7 @@ uv run adws/adw_build_test.py "implement the plan" --adw-id a1b2c3d4
 Watch a run with the trace db directly:
 
 ```bash
-sqlite3 adws/adw_data/sssf.db "select adw_id, status, substr(request,1,60), total_tokens from sessions order by started_at desc limit 10;"
+sqlite3 adws/adw_data/sssf.db "select adw_id, status, substr(request,1,60), total_tokens, total_cost, total_credits from sessions order by started_at desc limit 10;"
 sqlite3 adws/adw_data/sssf.db "select seq, name, kind, owner, status from phases where adw_id='a1b2c3d4' order by seq;"
 sqlite3 adws/adw_data/sssf.db "select kind, name, pid, command from processes where adw_id='a1b2c3d4' and ended_at is null;"
 ```
@@ -354,7 +361,7 @@ Honest edges, because knowing them is cheaper than discovering them.
 | Failure | What actually happens | What to do |
 |---|---|---|
 | The test phase reports green on a fresh install | `quality.py` ships placeholder commands that exit 0. Three ADWs run them as their test phase | Wire your real commands into `quality.py` before trusting `adw_build_test`, `adw_plan_build_test`, or `adw_simple_sdlc`. This is the first thing to customize |
-| A bare model pattern | The same model sits under several providers, so `gemini-3.6-flash` matches three catalog entries and `agents.validate()` refuses to spawn | Always write `provider/model-id` |
+| A bare Pi model pattern | The same model can sit under several Pi providers, so `gemini-3.6-flash` may be ambiguous | Qualify Pi models as `provider/model-id` |
 | `just` is not installed | The stamped `justfile` is a convenience wrapper, nothing depends on it | Every recipe is a one-line `uv run` or `sqlite3` command. Open the justfile and run the line yourself |
 | A coding agent hangs silently | No events, no tokens, an empty `raw_output.jsonl`. The trace goes quiet rather than red | Query `processes` for what is alive and kill it children-first. A killed run finalizes its own trace to `fail` |
 | The synced triad drifts | Type, `## Report` example, and `output_type=` disagree, so every call burns correction rounds | Grep the type name and fix all three in one edit |
@@ -362,7 +369,10 @@ Honest edges, because knowing them is cheaper than discovering them.
 | An agent edits something it should not | Detected and rolled back after the call, and the phase fails | Expected. Widen that agent's `writes` if the change was legitimate |
 | Commit phase has nothing to commit | `commit_all` raises if the cwd is not a git repo or nothing changed | `git init` with one commit first. A no-op build fails the phase rather than committing nothing |
 | `install.py --force` | Overwrites **all** stamped files, config and prompts included | Commit before you force |
-| `coding_agent: claude_code` | Schema-valid, but `agent_cc.py` raises | v1 is Pi only |
+| `harness_engineering` set on any non-Pi agent | It's Pi-only (pi extensions); `agents.validate()` fails objectively | Clear the list, or set `coding_agent: pi` |
+| An `antigravity` agent dies mid-turn | `agy` returns `Internal error encountered.` or `The stream was interrupted.` and the phase fails. Measured in 5 of 9 identical runs inside a ~380-file repo, 0 of 4 in a small one — it ingests the workspace, and a big context makes the upstream stream unreliable | Re-run with `--adw-id` to retry only the failed phase. SSSF will not auto-resume: a stream-killed turn can poison the conversation so every later request on it fails |
+| A `kiro_cli` phase reports 0 tokens | Correct, not a bug: Kiro's docs state per-session token counts are unavailable. It bills credits, shown by `just sessions`, the visualizer, and the console | Read credits, not tokens, for Kiro. A mixed roster's `total_tokens` undercounts by design |
+| The first chain in a fresh repo commits the whole factory | `commit_all` is `git add -A`, so anything the install left untracked lands in the builder's commit under the builder's message | Commit the stamped factory yourself right after `install.py`, before the first chain |
 
 Also missing on purpose, so you know what to add: this runs on your current branch. For real work you want a branch per run, a sandbox around the agent, and a merge step at the end.
 

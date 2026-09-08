@@ -301,10 +301,15 @@ class PromptEngineering(BaseModel):
     user: str                       # path to user.md
 
 
+# Every key in harnesses.ADAPTERS. Declared once so the defaults and the
+# per-agent field cannot drift apart when an adapter is added.
+CodingAgent = Literal["pi", "claude_code", "codex", "kiro_cli", "antigravity"]
+
+
 class AgentConfig(BaseModel):
     name: str
-    coding_agent: Literal["pi", "claude_code"] = "pi"
-    model: str = "google/gemini-3.6-flash"
+    coding_agent: CodingAgent = "claude_code"
+    model: str = "sonnet"
     thinking: str = "medium"        # off | minimal | low | medium | high | xhigh | max
     color: str = ""                 # hex swatch for this agent's lane in the UI
     purpose: str = ""
@@ -315,21 +320,23 @@ class AgentConfig(BaseModel):
     # (see adw_modules/permissions.py). `tools` cannot express this: `bash` runs
     # anything and `write` reaches any path, so an agent's capability list is a
     # statement of intent that nothing checks.
-    #   None  -> unrestricted, except the roster-wide `protected_files` paths
-    #   []    -> read-only: may modify nothing tracked
+    #   None  -> unrestricted, except `protected_files` and active prompts
+    #   []    -> read-only outside the current session runtime
     #   [...] -> only these. A trailing "/" means a directory prefix; a "*"
     #            makes it a glob; anything else is an exact path.
     writes: Optional[list[str]] = None
 
 
 class ConfigDefaults(BaseModel):
-    coding_agent: Literal["pi", "claude_code"] = "pi"
-    model: str = "google/gemini-3.6-flash"
+    coding_agent: CodingAgent = "claude_code"
+    model: str = "sonnet"
     thinking: str = "medium"
     color: str = ""
     harness_engineering: list[str] = Field(default_factory=list)
     tools: Optional[list[str]] = None    # roster-wide allowlist; None = all tools usable
     # Off-limits to every agent that has not named them in its own `writes`.
+    # Active system/user prompts are protected dynamically as well; unlike
+    # these patterns, only an exact `writes` entry may unlock a prompt.
     # The factory's own code is the default: an agent must not be able to edit
     # the machinery that decides whether its work passed.
     protected_files: list[str] = Field(default_factory=lambda: [
@@ -368,21 +375,30 @@ class EventRecord(BaseModel):
     ended_at: Optional[str] = None
 
 
-# ── Pi coding agent interface ────────────────────────────────────────────────
+# ── Harness adapter contract ─────────────────────────────────────────────────
+# One request/result shape shared by every coding-agent adapter (pi, Claude
+# Code, Codex, ...). agents.py builds exactly one HarnessRequest per send and
+# hands it to whichever adapter harnesses.resolve(agent.coding_agent) returns
+# — it never inspects coding_agent itself beyond that one lookup.
 
-class PiRequest(BaseModel):
-    """Everything one non-interactive pi run needs."""
+class HarnessRequest(BaseModel):
+    """Everything one non-interactive coding-agent turn needs."""
 
     prompt: str
     system_prompt: str
-    model: str                      # registry pattern, resolved to provider + id
+    model: str                      # adapter-specific pattern (pi registry id, Claude Code alias, ...)
     thinking: str = "medium"
-    session_id: str                 # pi --session-id: creates or continues
-    session_dir: str
-    raw_output_path: str            # JSONL stream lands here
-    tools: Optional[list[str]] = None
-    extensions: list[str] = Field(default_factory=list)
+    session_id: Optional[str] = None   # None = no prior session to continue
     cwd: str = "."                  # set from run.repo_root — the codebase root agents work in
+    raw_output_path: str            # the adapter's raw stdout stream lands here, verbatim
+    state_dir: str = ""             # adapter-owned on-disk session state, if it keeps one (pi)
+    tools: Optional[list[str]] = None
+    harness_engineering: list[str] = Field(default_factory=list)   # pi extensions; empty for Claude Code/Codex
+    # True exactly when agent.writes == [] (declared read-only). The one piece
+    # of permissions-shaped info an adapter may use to pick a NATIVE read-only
+    # sandbox as defense in depth (currently: Codex). permissions.enforce()
+    # still runs after every call regardless — this never replaces it.
+    read_only: bool = False
 
 
 class UsageBreakdown(BaseModel):
@@ -407,6 +423,13 @@ class UsageBreakdown(BaseModel):
     cache_read_cost: float = 0.0
     cache_write_cost: float = 0.0
     total_cost: float = 0.0
+    # Credits, for harnesses that bill in them instead of tokens and dollars.
+    # Deliberately NOT folded into total_cost: a credit is not a dollar, and its
+    # exchange rate is a per-model multiplier SSSF does not know. Kiro CLI is the
+    # case that motivated this — its docs state per-session token counts are not
+    # available at all, so credits are the only cost signal it emits, and without
+    # this field a whole Kiro run reports "0 tokens · $0.0000" and reads as free.
+    credits: float = 0.0
 
     def add_turn(self, usage: dict, total_tokens: int) -> None:
         """Fold in one pi `message_end` usage object.
@@ -429,19 +452,23 @@ class UsageBreakdown(BaseModel):
 
     def merge(self, other: "UsageBreakdown") -> None:
         """Add another call's usage — a phase that retries spends more than once."""
-        for field in self.model_fields:
+        # Read off the class, not the instance: Pydantic 2.11 deprecated the
+        # instance attribute and removes it in v3.
+        for field in type(self).model_fields:
             setattr(self, field, getattr(self, field) + getattr(other, field))
 
 
-class PiResult(BaseModel):
+class HarnessResult(BaseModel):
     text: str = ""
     returncode: int = 0
+    # The REAL session id the adapter used or was assigned — never the
+    # placeholder agents.py may have offered in the request. agents.py adopts
+    # this value for retries and for agent_map.json; it must not fall back to
+    # its own pre-generated id once a real one comes back.
     session_id: str = ""
-    tokens: int = 0
-    cost: float = 0.0
     usage: UsageBreakdown = Field(default_factory=UsageBreakdown)
-    # Context occupancy after the LAST turn — not a sum. `tokens` bills every
-    # turn; this is how full the window is right now, which is what the
-    # visualizer's context bar measures against `context_window`.
+    # Context occupancy after the LAST turn — not a sum. usage.total_tokens
+    # bills every turn; this is how full the window is right now, which is
+    # what the visualizer's context bar measures against `context_window`.
     context_tokens: int = 0
-    context_window: int = 0         # 0 when the registry declares no ceiling
+    context_window: int = 0         # 0 when the adapter can't report a ceiling

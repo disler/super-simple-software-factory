@@ -5,7 +5,8 @@
     "": {
       "name": "sssf-visualizer",
       "dependencies": {
-        "@fontsource/play": "^5.3.0",
+        "@fontsource/ibm-plex-mono": "^5.2.5",
+        "@fontsource/ibm-plex-sans": "^5.2.5",
         "lucide-vue-next": "^1.0.0",
         "vue": "^3.5.13",
       },
@@ -80,7 +81,9 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.28.1", "", { "os": "win32", "cpu": "x64" }, "sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A=="],
 
-    "@fontsource/play": ["@fontsource/play@5.3.0", "", {}, "sha512-VpI6fd/A3jT1J3bOuyHn01CioAqwGWwNReTGycrFF2D57An2EJhDAuG030up3Ho7jSy1sSGW85gtB+l/v3gXOw=="],
+    "@fontsource/ibm-plex-mono": ["@fontsource/ibm-plex-mono@5.3.0", "", {}, "sha512-eTgnZjZEGk1QtD3ZstF+Vclo2HLAni8YMy34/DxllwZvyz1lR/1RF/xTiAquOBO7MvqBx8D2Ig2WCPMVfdZu7Q=="],
+
+    "@fontsource/ibm-plex-sans": ["@fontsource/ibm-plex-sans@5.3.0", "", {}, "sha512-CbE4CbbEEZJX860XyUiRpsksXIQR8Rp2XDva2VO53NJox9tVNtusrysd2x5YkUEY3ErQ66W1IiiQL8/wihhw5w=="],
 
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 

@@ -40,6 +40,11 @@ export function fmtCost(n: number | null | undefined): string {
   return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`
 }
 
+export function fmtCredits(n: number | null | undefined): string {
+  if (n == null) return '—'
+  return `${n.toFixed(4)} cr`
+}
+
 // Compact offset label for time axes: 0s, 30s, 1m, 1m30s, 2m, 1h05m.
 export function fmtOffset(ms: number): string {
   const s = Math.round(ms / 1000)

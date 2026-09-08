@@ -1,9 +1,12 @@
-"""Pi coding agent interface — v1's only coding agent.
+"""Pi coding agent adapter — the HarnessAdapter behind coding_agent: pi.
 
-Runs `pi -p --mode json` and tails its JSONL stdout line by line, forwarding
-each event to a callback WHILE the agent works (the streaming crack, solved
-by construction). `--session-id` creates-or-continues, so running and
-continuing an agent are the same call: same session id = same context window.
+Runs `pi -p --mode json` and tails its JSONL stdout line by line, folding the
+raw stream into ONE normalized tool_call record per completed call (via
+ToolCallTracker) and forwarding only those to the caller — the same
+normalization every adapter is responsible for doing on its own raw wire
+format, per harnesses.HarnessAdapter. `--session-id` creates-or-continues, so
+running and continuing an agent are the same call: same session id = same
+context window.
 """
 
 from __future__ import annotations
@@ -16,8 +19,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
-from .data_types import PiRequest, PiResult
-from .utils import now_iso, operator_env
+from .data_types import AgentConfig, HarnessRequest, HarnessResult
+from .utils import drain_stderr, new_id, now_iso, operator_env
 
 PI_PATH = os.environ.get("PI_PATH", "pi")
 MODELS_JSON = os.environ.get("PI_MODELS_PATH",
@@ -205,35 +208,41 @@ class ToolCallTracker:
         }
 
 
-def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
+def run(request: HarnessRequest, on_event: Optional[Callable[[dict], None]] = None,
         on_spawn: Optional[Callable[[int], None]] = None,
-        on_exit: Optional[Callable[[int], None]] = None) -> PiResult:
+        on_exit: Optional[Callable[[int], None]] = None) -> HarnessResult:
     """Run one non-interactive pi turn.
 
     `on_spawn(pid)` and `on_exit(pid)` bracket the child process so the caller
     can record it as killable — a hung coding agent is otherwise a pid you have
     to hunt for in `ps` while the run sits there.
+
+    `request.session_id` is normally supplied by agents.py, but pi's CLI needs
+    an explicit `--session-id` no matter what, so a missing one is minted here
+    rather than pushed back onto the caller.
     """
+    session_id = request.session_id or f"pi-{new_id(8)}"
     provider, model_id = resolve_model(request.model)
     cmd = [
         PI_PATH, "-p", "--mode", "json",
         "--provider", provider, "--model", model_id,
         "--thinking", request.thinking,
-        "--session-id", request.session_id,
-        "--session-dir", request.session_dir,
+        "--session-id", session_id,
+        "--session-dir", request.state_dir,
         "--system-prompt", request.system_prompt,
     ]
     if request.tools:
         cmd += ["--tools", ",".join(request.tools)]
-    for extension in request.extensions:
+    for extension in request.harness_engineering:
         cmd += ["-e", extension]
     cmd.append(request.prompt)
 
     raw_path = Path(request.raw_output_path)
     raw_path.parent.mkdir(parents=True, exist_ok=True)
 
-    result = PiResult(session_id=request.session_id,
-                      context_window=context_window(provider, model_id))
+    result = HarnessResult(session_id=session_id,
+                           context_window=context_window(provider, model_id))
+    tracker = ToolCallTracker()
     # stdin is DEVNULL, deliberately. The prompt travels in argv, so the child
     # never needs stdin — but inheriting the parent's means pi sees a non-TTY
     # and can sit forever waiting for piped input that will never arrive or
@@ -246,6 +255,10 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
                                env=operator_env())
     if on_spawn:
         on_spawn(process.pid)
+    # Drained on a background thread from the moment the child exists: an
+    # unread stderr pipe fills and blocks the child's write, which stalls
+    # stdout too and looks exactly like a hang (see utils.drain_stderr).
+    stderr_getter = drain_stderr(process.stderr)
     with raw_path.open("a") as raw:
         assert process.stdout is not None
         for line in process.stdout:
@@ -266,21 +279,41 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
                         result.text = text   # last assistant message wins
                     usage = message.get("usage", {}) or {}
                     turn = _context_tokens(usage)
-                    result.tokens += turn
                     result.usage.add_turn(usage, turn)
                     # Occupancy is read off the last VALID assistant turn, the
                     # way pi does it — an aborted or errored turn reports usage
                     # you can't trust, so it must not overwrite a good reading.
                     if turn and message.get("stopReason") not in ("aborted", "error"):
                         result.context_tokens = turn
-                    result.cost += (usage.get("cost", {}) or {}).get("total", 0.0) or 0.0
-            if on_event:
-                on_event(event)
+            # Fold pi's raw tool_execution_start/_update/_end stream into ONE
+            # normalized record per completed call, and forward only that —
+            # on_event never sees pi's own wire shape, so agents.py stays
+            # ignorant of it too.
+            record = tracker.observe(event)
+            if record and on_event:
+                on_event(record)
 
-    stderr = process.stderr.read() if process.stderr else ""
     result.returncode = process.wait()
+    stderr = stderr_getter()
     if on_exit:
         on_exit(process.pid)
     if result.returncode != 0 and not result.text:
         raise RuntimeError(f"pi exited {result.returncode}: {stderr.strip()[-800:]}")
     return result
+
+
+class PiAdapter:
+    """The HarnessAdapter for coding_agent: pi. See harnesses.HarnessAdapter."""
+
+    def validate(self, agent: AgentConfig) -> list[str]:
+        try:
+            resolve_model(agent.model)
+        except ValueError as error:
+            return [str(error)]
+        return []
+
+    def run(self, request: HarnessRequest,
+            on_event: Optional[Callable[[dict], None]] = None,
+            on_spawn: Optional[Callable[[int], None]] = None,
+            on_exit: Optional[Callable[[int], None]] = None) -> HarnessResult:
+        return run(request, on_event, on_spawn, on_exit)

@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import secrets
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable, Optional
 
 from dotenv import load_dotenv
 
@@ -36,6 +38,37 @@ def operator_env() -> dict[str, str]:
     parts = [p for p in env.get("PATH", "").split(os.pathsep) if p and p != venv_bin]
     env["PATH"] = os.pathsep.join(parts)
     return env
+
+
+def drain_stderr(stream: Optional["object"]) -> Callable[[], str]:
+    """Start draining a subprocess's stderr on a background thread.
+
+    Every coding-agent adapter tails stdout line by line on the main thread
+    while the child runs. stdout and stderr are separate OS pipes with their
+    own fixed capacity (commonly 64KB) — if the child writes enough to
+    stderr and nobody reads it, that write blocks, and a child blocked mid
+    write also stops producing stdout, which looks exactly like a hang. This
+    reads stderr concurrently so it can never back up.
+
+    Returns a getter: call it once the process has exited to join the thread
+    (it will already be at EOF) and get everything stderr wrote.
+    """
+    chunks: list[str] = []
+
+    def _drain() -> None:
+        if stream is None:
+            return
+        for chunk in stream:
+            chunks.append(chunk)
+
+    thread = threading.Thread(target=_drain, daemon=True)
+    thread.start()
+
+    def get(timeout: float = 5.0) -> str:
+        thread.join(timeout=timeout)
+        return "".join(chunks)
+
+    return get
 
 
 def new_id(length: int = 8) -> str:

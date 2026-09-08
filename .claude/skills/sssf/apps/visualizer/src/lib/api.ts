@@ -8,10 +8,14 @@ import type {
   SessionDetail,
   SessionSummary,
 } from './types'
+import { observeServerClock } from './clock'
 
 async function getJson(url: string): Promise<unknown> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`GET ${url} → ${res.status}`)
+  // Every response carries the API's clock; live elapsed times are measured
+  // against it rather than the browser's. See lib/clock.ts.
+  observeServerClock(res.headers.get('x-sssf-now'))
   return res.json()
 }
 

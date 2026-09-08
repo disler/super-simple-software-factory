@@ -49,6 +49,7 @@ class Run:
         self.phases: list[Phase] = []
         self.tokens = 0
         self.cost = 0.0
+        self.credits = 0.0
         self._seq = tracer.max_phase_seq(adw_id)   # a joined run continues the sequence
         self.repo_root = git_helper.repo_root()    # where every agent is spawned to work
         self.session_dir = ensure_dir(Path(cfg.defaults.data_dir) / "sessions" / adw_id)
@@ -63,10 +64,11 @@ class Run:
         self._agent_map_path.write_text(json.dumps(self.agent_map, indent=2))
 
     # ── usage (run totals mirror what the tracer accumulates in sqlite) ─────
-    def add_usage(self, tokens: int, cost: float) -> None:
+    def add_usage(self, tokens: int, cost: float, credits: float = 0.0) -> None:
         self.tokens += tokens
         self.cost += cost
-        self.tracer.session_add_usage(self.adw_id, tokens, cost)
+        self.credits += credits
+        self.tracer.session_add_usage(self.adw_id, tokens, cost, credits)
 
     # ── the phase primitive ─────────────────────────────────────────────────
     @contextmanager
@@ -99,7 +101,7 @@ class Run:
             self.tracer.session_finish(self.adw_id, ok=False)
             self.console.phase_ended(phase, time.monotonic() - clock)
             self.console.session_finished(False, self.tokens, self.cost,
-                                          self.cfg.observability.db)
+                                          self.cfg.observability.db, self.credits)
             raise
         else:
             phase.status = "success"
@@ -138,5 +140,6 @@ class Run:
                 type="error", name="not_accepted", payload={"reason": note}))
             self.console.note(f"not accepted: {note}")
         self.tracer.session_finish(self.adw_id, ok=ok)
-        self.console.session_finished(ok, self.tokens, self.cost, self.cfg.observability.db)
+        self.console.session_finished(ok, self.tokens, self.cost,
+                                      self.cfg.observability.db, self.credits)
         return 0 if ok else 1

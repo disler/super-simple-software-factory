@@ -5,12 +5,12 @@ import type { AgentStartPayload, EventRow, ToolCallPayload } from './types'
 // detail list. gate_fail reads as an error signal on purpose.
 
 export const EVENT_DOT_COLORS: Record<string, string> = {
-  agent_start: '#c89bff',
-  tool_call: '#5ad2dd',
-  handoff: '#94a3ff',
-  agent_end: '#4ade80',
-  error: '#ff6f67',
-  gate_fail: '#ff6f67',
+  agent_start: '#7c6fd4',
+  tool_call: '#2f8f97',
+  handoff: '#5f68c9',
+  agent_end: '#2f9e5c',
+  error: '#c14a42',
+  gate_fail: '#c14a42',
 }
 
 export function dotColor(type: string | null): string | null {
@@ -23,7 +23,7 @@ export function dotColor(type: string | null): string | null {
 // for in-flight agents); the palette below covers dbs written before the
 // color column existed.
 
-export const AGENT_FALLBACK_COLORS = ['#c89bff', '#5ad2dd', '#94a3ff', '#e8b64a', '#f2a2c4']
+export const AGENT_FALLBACK_COLORS = ['#7c6fd4', '#2f8f97', '#5f68c9', '#b8860b', '#b9607e']
 
 export function agentColor(
   configColor: string | null | undefined,
@@ -34,7 +34,7 @@ export function agentColor(
     configColor ??
     payloadColor ??
     AGENT_FALLBACK_COLORS[index % AGENT_FALLBACK_COLORS.length] ??
-    '#c89bff'
+    '#7c6fd4'
   )
 }
 

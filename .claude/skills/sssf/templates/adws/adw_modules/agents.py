@@ -15,10 +15,10 @@ from typing import Optional
 
 import yaml
 
-from . import agent_pi, permissions, prompts
+from . import harnesses, permissions, prompts
 from .data_types import (AgentCall, AgentConfig, EnvelopeBase, EventRecord,
-                         GateCheck, GateReport, Phase, PiRequest, SSSFConfig,
-                         UsageBreakdown)
+                         GateCheck, GateReport, HarnessRequest, HarnessResult,
+                         Phase, SSSFConfig, UsageBreakdown)
 from .utils import new_id
 
 JSON_FIX_ATTEMPTS = 2      # continue-with-correction attempts for malformed JSON
@@ -49,26 +49,50 @@ def resolve(cfg: SSSFConfig, name: str) -> AgentConfig:
                      f"available: {[a.name for a in cfg.agents]}")
 
 
-def validate(cfg: SSSFConfig, required: list[str]) -> None:
-    """Fail fast: every required name must resolve to a usable agent."""
+def _prompt_symlink_problems(agent: AgentConfig, repo_root: Path) -> list[str]:
     problems = []
+    for label, ref in (("system", agent.prompt_engineering.system),
+                       ("user", agent.prompt_engineering.user)):
+        component = permissions.prompt_symlink_component(repo_root, ref)
+        if component is not None:
+            problems.append(
+                f"agent {agent.name!r}: {label} prompt must use a direct path; "
+                f"symlink component: {component}")
+    return problems
+
+
+def _roster_prompt_symlink_problems(cfg: SSSFConfig, repo_root: Path) -> list[str]:
+    return [problem for configured_agent in cfg.agents
+            for problem in _prompt_symlink_problems(configured_agent, repo_root)]
+
+
+def validate(cfg: SSSFConfig, required: list[str]) -> None:
+    """Fail fast: every required name must resolve to a usable agent.
+
+    Adapter-specific checks (model resolution, harness_engineering support,
+    ...) live in each adapter's own `validate()` — this function never asks
+    what coding_agent an agent uses beyond looking its adapter up.
+    """
+    # Every configured prompt is an active protected path, even when this ADW
+    # does not require its agent. Scan only path safety roster-wide; model and
+    # existence validation below remains scoped to `required`.
+    problems = _roster_prompt_symlink_problems(cfg, Path.cwd())
     for name in required:
         try:
             agent = resolve(cfg, name)
         except SystemExit as e:
             problems.append(str(e))
             continue
-        if agent.coding_agent != "pi":
-            problems.append(f"agent {name!r}: coding_agent {agent.coding_agent!r} "
-                            f"is not implemented in v1 (pi only)")
+        try:
+            adapter = harnesses.resolve(agent.coding_agent)
+        except ValueError as e:
+            problems.append(f"agent {name!r}: {e}")
+            continue
+        problems.extend(f"agent {name!r}: {p}" for p in adapter.validate(agent))
         for label, ref in (("system", agent.prompt_engineering.system),
                            ("user", agent.prompt_engineering.user)):
             if not Path(ref).is_file():
                 problems.append(f"agent {name!r}: {label} prompt not found: {ref}")
-        try:
-            agent_pi.resolve_model(agent.model)
-        except ValueError as e:
-            problems.append(f"agent {name!r}: {e}")
     if problems:
         raise SystemExit("config validation failed:\n- " + "\n- ".join(problems))
 
@@ -78,6 +102,11 @@ def validate(cfg: SSSFConfig, required: list[str]) -> None:
 def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
     """One agent call: render prompts -> pi run -> typed parse -> gates -> envelope."""
     agent = resolve(run.cfg, phase.params.owner)
+    prompt_problems = _roster_prompt_symlink_problems(run.cfg, Path(run.repo_root))
+    if prompt_problems:
+        raise SystemExit("config validation failed:\n- " + "\n- ".join(prompt_problems))
+    adapter = harnesses.resolve(agent.coding_agent)   # resolved once; the rest of this
+                                                       # function only calls the common contract
     agent_dir = run.session_dir / agent.name
     agent_dir.mkdir(parents=True, exist_ok=True)
 
@@ -103,43 +132,75 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
                                           "harness_engineering": agent.harness_engineering}))
     run.console.agent_started(agent.name, agent.model, session_id)
 
-    # Parse retries and gate corrections re-enter the SAME pi session, so the
+    # Parse retries and gate corrections re-enter the SAME session, so the
     # last send is the one whose context occupancy is current — while spend is
     # the opposite: every send costs, so usage accumulates across all of them.
-    latest: agent_pi.PiResult | None = None
+    latest: HarnessResult | None = None
     spent = UsageBreakdown()
 
-    def send(prompt_text: str) -> agent_pi.PiResult:
-        nonlocal latest
-        request = PiRequest(
+    # This immutable phase baseline is only for the final paths_touched event.
+    # Enforcement gets a fresh baseline immediately before each harness turn,
+    # so a breach is rolled back before parsing or any retry can run.
+    phase_before = permissions.snapshot(run)
+
+    def enforce_turn(before) -> None:
+        try:
+            permissions.enforce(run, phase, agent, before)
+        except permissions.PermissionBreach as breach:
+            run.tracer.event(EventRecord(
+                adw_id=run.adw_id, phase_id=phase.phase_id,
+                type="error", name="permission_breach",
+                payload={"agent": agent.name, "error": str(breach),
+                         "writes": agent.writes,
+                         "protected_files": run.cfg.defaults.protected_files}))
+            raise
+
+    def send(prompt_text: str) -> HarnessResult:
+        nonlocal latest, session_id
+        request = HarnessRequest(
             prompt=prompt_text,
             system_prompt=system_text,
             model=agent.model,
             thinking=agent.thinking,
             session_id=session_id,
-            # absolute: these are read by the pi subprocess, which runs in repo_root
-            session_dir=str((agent_dir / "pi_sessions").resolve()),
+            # absolute: these are read by the coding-agent subprocess, which runs in repo_root.
+            # "pi_sessions" is a historical name, kept as-is on purpose: it is where pi's own
+            # `--session-dir` has always pointed, and renaming it would orphan every session
+            # already on disk for an upgrading install. Only pi reads this directory; other
+            # adapters receive the same path and are free to ignore it.
+            state_dir=str((agent_dir / "pi_sessions").resolve()),
             raw_output_path=str((agent_dir / "raw_output.jsonl").resolve()),
             tools=agent.tools,
-            extensions=agent.harness_engineering,
+            harness_engineering=agent.harness_engineering,
             cwd=str(run.repo_root),
+            read_only=(agent.writes == []),
         )
-        result = agent_pi.run(
-            request,
-            on_event=_event_forwarder(run, phase, agent.name),
-            on_spawn=lambda pid: run.tracer.process_start(
-                run.adw_id, "agent", agent.name, pid,
-                f"{agent.coding_agent} {agent.name} {agent.model}"),
-            on_exit=lambda pid: run.tracer.process_end(run.adw_id, pid))
-        run.add_usage(result.tokens, result.cost)
+        turn_before = permissions.snapshot(run)
+        try:
+            result = adapter.run(
+                request,
+                on_event=_event_forwarder(run, phase, agent.name),
+                on_spawn=lambda pid: run.tracer.process_start(
+                    run.adw_id, "agent", agent.name, pid,
+                    f"{agent.coding_agent} {agent.name} {agent.model}"),
+                on_exit=lambda pid: run.tracer.process_end(run.adw_id, pid))
+        except BaseException as adapter_error:
+            try:
+                enforce_turn(turn_before)
+            except permissions.PermissionBreach as breach:
+                raise breach from adapter_error
+            raise
+        enforce_turn(turn_before)
+        # Adopt the REAL id the adapter used or was assigned — never the
+        # placeholder agents.py offered — so retries within this phase, and
+        # the entry saved to agent_map.json, continue the actual session.
+        if result.session_id:
+            session_id = result.session_id
+        run.add_usage(result.usage.total_tokens, result.usage.total_cost,
+                      result.usage.credits)
         spent.merge(result.usage)
         latest = result
         return result
-
-    # What the tree looked like before this agent got its hands on it. Every
-    # send in this phase — first prompt, JSON retries, gate corrections — is
-    # measured against this one baseline.
-    tree_before = permissions.snapshot(run)
 
     result = send(user_text)
     envelope, attempt = _parse_with_retries(run, phase, call, result, send)
@@ -172,18 +233,7 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
         result = send(correction)
         envelope, attempt = _parse_with_retries(run, phase, call, result, send)
 
-    # Permission is checked after every send is done, and before the envelope is
-    # accepted: an agent does not get to report success on a phase in which it
-    # wrote somewhere it was not allowed to.
-    try:
-        touched = permissions.enforce(run, phase, agent, tree_before)
-    except permissions.PermissionBreach as breach:
-        run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
-                                     type="error", name="permission_breach",
-                                     payload={"agent": agent.name, "error": str(breach),
-                                              "writes": agent.writes,
-                                              "protected_files": run.cfg.defaults.protected_files}))
-        raise
+    touched = permissions.changed_paths(phase_before, permissions.snapshot(run))
     if touched:
         run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
                                      type="log", name="paths_touched",
@@ -196,7 +246,8 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
                                  context_tokens=context.context_tokens,
                                  context_window=context.context_window)
     run.save_agent_map(agent.name, {"session_id": session_id, "model": agent.model,
-                                    "coding_agent": agent.coding_agent})
+                                    "coding_agent": agent.coding_agent,
+                                    "read_only": agent.writes == []})
     run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
                                  type="handoff", name=agent.name,
                                  payload={"artifacts": envelope.artifacts,
@@ -207,10 +258,12 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
                                  # phase paid for every attempt.
                                  tokens=spent.total_tokens,
                                  payload={"cost": spent.total_cost,
+                                          "credits": spent.credits,
                                           "usage": spent.model_dump(),
                                           "context_tokens": context.context_tokens,
                                           "context_window": context.context_window}))
-    run.console.agent_finished(agent.name, spent.total_tokens, spent.total_cost)
+    run.console.agent_finished(agent.name, spent.total_tokens, spent.total_cost,
+                               spent.credits)
     if envelope.status != "success":
         raise RuntimeError(f"{agent.name} reported status={envelope.status!r}: {envelope.summary}")
     return envelope
@@ -226,24 +279,46 @@ def _as_report(result) -> GateReport:
 
 
 def _agent_session_id(run, agent: AgentConfig) -> str:
+    """Reuse a mapped session only when coding_agent, model, AND permission
+    class (read_only) all still match — a session built by a different
+    harness, model, or write/read-only class is not a safe context window to
+    rejoin, no matter how similar the id looks.
+
+    read_only matters beyond bookkeeping: some adapters (Codex) can only pick
+    a native read-only sandbox on a FRESH turn — `codex exec resume` has no
+    `--sandbox` flag — so a session that started writable and would now be
+    read-only must never be resumed, or it silently keeps running with the
+    write access it started with. Requiring an exact match forces a new
+    session in that direction instead (agents.py stays adapter-agnostic:
+    every coding_agent is held to the same rule, whether or not it happens to
+    use read_only for anything).
+
+    `entry.get("read_only")` on an agent_map.json entry written before this
+    field existed returns None, which never equals a real True/False — so a
+    pre-upgrade session always starts fresh rather than being trusted under
+    an unknown permission history.
+    """
     entry = run.agent_map.get(agent.name)
-    if entry and entry.get("model") == agent.model:
+    read_only = agent.writes == []
+    if (entry and entry.get("model") == agent.model
+            and entry.get("coding_agent") == agent.coding_agent
+            and entry.get("read_only") == read_only):
         return entry["session_id"]           # rejoin the existing context window
     return f"sssf-{run.adw_id}-{agent.name}-{new_id(4)}"
 
 
 def _event_forwarder(run, phase: Phase, agent_name: str):
-    """One tool_call event per real tool call, with its exact args and result."""
-    tracker = agent_pi.ToolCallTracker()
+    """One tool_call event per real tool call, with its exact args and result.
 
-    def forward(event: dict) -> None:
-        record = tracker.observe(event)
-        if record is None:
-            return
+    The adapter has already folded its own raw wire format into this
+    normalized record (see harnesses.HarnessAdapter) — this function is the
+    same for every coding_agent.
+    """
+    def forward(record: dict) -> None:
         # The call's span rides the columns; duration_ms stays in the payload as
-        # pi's own authoritative number.
+        # the adapter's own authoritative number.
         run.tracer.event(EventRecord(adw_id=run.adw_id, phase_id=phase.phase_id,
-                                     type="tool_call", name=record.pop("label"),
+                                     type="tool_call", name=record.pop("label", record.get("tool", "tool")),
                                      started_at=record.pop("started_at", None),
                                      ended_at=record.pop("ended_at", None),
                                      payload={**record, "agent": agent_name}))

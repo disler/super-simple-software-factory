@@ -243,6 +243,7 @@ const hiddenRowCount = computed(() =>
     </div>
     <div class="card-stats">
       <StatChip kind="cost" :value="session.total_cost" />
+      <StatChip v-if="session.total_credits" kind="credits" :value="session.total_credits" />
       <StatChip kind="runtime" :value="durationMs" />
       <StatChip kind="tokens" :value="session.total_tokens" />
     </div>
@@ -263,6 +264,7 @@ const hiddenRowCount = computed(() =>
   border: 1px solid var(--border-soft);
   border-radius: 16px;
   background: var(--surface);
+  box-shadow: var(--shadow);
   color: var(--text);
   cursor: pointer;
   overflow: hidden;
@@ -303,23 +305,22 @@ const hiddenRowCount = computed(() =>
 }
 
 .card-archive:hover {
-  background: rgba(255, 111, 103, 0.16);
-  color: #ff6f67;
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+  color: var(--red);
 }
 
 .card:hover {
-  border-color: rgba(148, 163, 255, 0.45);
-  box-shadow: 0 10px 34px rgba(148, 163, 255, 0.12);
-  transform: translateY(-2px);
+  border-color: var(--blue);
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-1px);
 }
 
 .card.running {
-  border-color: rgba(108, 182, 255, 0.6);
-  box-shadow: 0 0 22px rgba(108, 182, 255, 0.16);
+  border-color: var(--blue);
 }
 
 .card.fail {
-  border-color: rgba(255, 111, 103, 0.6);
+  border-color: var(--red);
 }
 
 /* Text rows must never absorb flex shrink — the fixed-height card squeezes
@@ -329,14 +330,14 @@ const hiddenRowCount = computed(() =>
   font-family: var(--mono);
   font-size: 18px;
   font-weight: 700;
-  color: var(--purple);
+  color: var(--blue);
 }
 
 .card-adw {
   flex: none;
   font-family: var(--mono);
   font-size: 16px;
-  color: var(--cyan);
+  color: var(--dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

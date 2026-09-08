@@ -42,7 +42,7 @@ Answer four questions, in order:
 ## Step 3 — Generate or write it
 
 ```bash
-uv run .claude/skills/sssf/scripts/make_adw.py --name review_docs --agents scout,builder
+uv run <skill-dir>/scripts/make_adw.py --name review_docs --agents scout,builder
 ```
 
 Writes `adws/adw_review_docs.py`: one agent phase per name, chained by `previous=`, starter agents mapped to their output types, unknown agents to `GenericOutput`. It does NOT create config entries or prompt files — do that first (`update_config.md`), or `agents.validate()` will stop the run and tell you what's missing.

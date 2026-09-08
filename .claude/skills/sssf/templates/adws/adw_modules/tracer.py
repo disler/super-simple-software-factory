@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   status        TEXT,
   engineer      TEXT,
   started_at    TEXT, ended_at TEXT,
-  total_tokens  INTEGER DEFAULT 0, total_cost REAL DEFAULT 0,
+  total_tokens  INTEGER DEFAULT 0, total_cost REAL DEFAULT 0, total_credits REAL DEFAULT 0,
   archived      INTEGER DEFAULT 0   -- review triage, set by the UI; never by a run
 );
 CREATE TABLE IF NOT EXISTS phases (
@@ -96,7 +96,10 @@ MIGRATIONS = [("agent_sessions", "color", "TEXT"),
               ("sessions", "adw_name", "TEXT"),
               ("agent_sessions", "context_tokens", "INTEGER"),
               ("agent_sessions", "context_window", "INTEGER"),
-              ("sessions", "archived", "INTEGER DEFAULT 0")]
+              ("sessions", "archived", "INTEGER DEFAULT 0"),
+              # Harnesses that bill in credits, not dollars — see
+              # UsageBreakdown.credits.
+              ("sessions", "total_credits", "REAL DEFAULT 0")]
 
 
 class Tracer:
@@ -164,10 +167,12 @@ class Tracer:
         )
         self.processes_end_all(adw_id)   # nothing of this run is alive any more
 
-    def session_add_usage(self, adw_id: str, tokens: int, cost: float) -> None:
+    def session_add_usage(self, adw_id: str, tokens: int, cost: float,
+                          credits: float = 0.0) -> None:
         self.conn.execute(
-            "UPDATE sessions SET total_tokens=total_tokens+?, total_cost=total_cost+? WHERE adw_id=?",
-            (tokens, cost, adw_id),
+            "UPDATE sessions SET total_tokens=total_tokens+?, total_cost=total_cost+?,"
+            " total_credits=total_credits+? WHERE adw_id=?",
+            (tokens, cost, credits, adw_id),
         )
 
     # ── processes (adw_id → pid, so a hung run can be found and killed) ─────
@@ -261,7 +266,8 @@ class Tracer:
             "INSERT INTO agent_sessions (adw_id, agent, coding_agent, model, color,"
             " session_id, context_tokens, context_window, created_at, last_used_at)"
             " VALUES (?,?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT(adw_id, agent) DO UPDATE SET model=excluded.model,"
+            " ON CONFLICT(adw_id, agent) DO UPDATE SET coding_agent=excluded.coding_agent,"
+            " model=excluded.model,"
             " color=excluded.color, session_id=excluded.session_id,"
             " context_tokens=excluded.context_tokens,"
             " context_window=excluded.context_window,"

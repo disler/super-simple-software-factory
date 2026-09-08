@@ -56,8 +56,8 @@ plan-build *ARGS:
 sdlc *ARGS:
     uv run adws/adw_plan_build_test.py --config {{config}} "$@"
 
-# the full chain, plus review and docs: just simple-sdlc "add a /health endpoint"
-simple-sdlc *ARGS:
+# the full chain, plus review and docs: just sssf "<prompt or path/to/spec.md>"
+sssf *ARGS:
     uv run adws/adw_simple_sdlc.py --config {{config}} "$@"
 
 # ── watch it ────────────────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ simple-sdlc *ARGS:
 
 # the last 10 runs
 sessions:
-    @sqlite3 {{db}} "select adw_id, status, substr(request,1,50), total_tokens, round(total_cost,4) from sessions order by started_at desc limit 10;"
+    @sqlite3 {{db}} "select adw_id, status, substr(request,1,50), total_tokens, round(total_cost,4), round(total_credits,4) from sessions order by started_at desc limit 10;"
 
 # phase status in sequence: just phases <adw_id>
 phases ADW_ID:
@@ -86,4 +86,4 @@ procs ADW_ID:
 
 # boot the trace UI, http://localhost:4601 (api on :4600)
 obs:
-    cd .claude/skills/sssf/apps/visualizer && bun install && (SSSF_DB={{justfile_directory()}}/{{db}} bun run server/index.ts &) && bunx vite
+    skill_dir=".agents/skills/sssf"; [ -d "$skill_dir" ] || skill_dir=".claude/skills/sssf"; [ -d "$skill_dir" ] || skill_dir=".kiro/skills/sssf"; [ -d "$skill_dir" ] || { echo "SSSF integration not installed" >&2; exit 1; }; cd "$skill_dir/apps/visualizer" && bun install && (SSSF_DB={{justfile_directory()}}/{{db}} bun run server/index.ts &) && bunx vite

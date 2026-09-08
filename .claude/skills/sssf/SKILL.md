@@ -1,6 +1,6 @@
 ---
 name: sssf
-description: Super Simple Software Factory — deploy and operate repeatable agents+code workflows (ADWs) in any codebase. Use when the user says /sssf install, wants to create/run/update an ADW, manage the agent roster in sssf.config.yaml, or observe running agent workflows. Keywords - sssf, software factory, ADW, AI developer workflow, agent pipeline, install factory.
+description: Super Simple Software Factory — deploy and operate repeatable agents+code workflows (ADWs) in any codebase. Use when the user invokes sssf (for example /sssf in Claude Code or $sssf in Codex), wants to create/run/update an ADW, manage the agent roster in sssf.config.yaml, or observe running agent workflows. Keywords - sssf, software factory, ADW, AI developer workflow, agent pipeline, install factory.
 argument-hint: "[install | create adw | run adw | update config | ...]"
 ---
 
@@ -46,11 +46,12 @@ You run the system, observe the system, and help the user interact with it. **Yo
 
 | Request | Cookbook |
 |---|---|
-| `/sssf install`, set up the factory in this repo | [cookbooks/install.md](cookbooks/install.md) |
+| `sssf install`, set up the factory in this repo | [cookbooks/install.md](cookbooks/install.md) |
 | create a new ADW / workflow | [cookbooks/create_adw.md](cookbooks/create_adw.md) |
 | modify an existing ADW chain | [cookbooks/update_adw.md](cookbooks/update_adw.md) |
 | create the config / agent roster | [cookbooks/create_config.md](cookbooks/create_config.md) |
-| add or retune an agent (model, thinking, tools, prompts) | [cookbooks/update_config.md](cookbooks/update_config.md) |
+| decide WHICH harness/model each agent should run | the `sssf-pick-models` skill, installed beside this one — it carries the catalogs |
+| add or retune an agent (prompts, tools, thinking, a model you already chose) | [cookbooks/update_config.md](cookbooks/update_config.md) |
 | extend adw_modules with new low-level logic | [cookbooks/update_modules.md](cookbooks/update_modules.md) |
 | run / monitor an ADW | [cookbooks/how_to_prompt_for_the_eng.md](cookbooks/how_to_prompt_for_the_eng.md) **first**, then [cookbooks/run_adw.md](cookbooks/run_adw.md) |
 | turn a request into an ADW prompt | [cookbooks/how_to_prompt_for_the_eng.md](cookbooks/how_to_prompt_for_the_eng.md) |
@@ -68,9 +69,9 @@ Deep specs, when needed: [references/config.md](references/config.md) · [refere
 6. **ADW scripts stay thin** — all low-level logic lives in `adw_modules/`.
 7. **Every phase earns a description** — one sentence on what it does and why, never a restatement of its name. It is the only intent the trace, the console, and the UI ever show; `commit_plan: "Commit the plan"` is rejected at construction, blank is too.
 8. **A known command is code, not an agent** — if you can write the invocation down (`bun test`, `ruff check`), it belongs in a `kind="code"` phase via `adw_modules/quality.py`. Agents are for the parts that need reading and deciding; failures come back to the builder as an envelope either way.
-9. **`tools:` is a capability list, `writes:` is the boundary** — `bash` runs anything (including `git checkout`) and `write` reaches any path, so a tool list can never make "this agent changes nothing" true. `writes:` per agent and `protected_files` in defaults are enforced in `adw_modules/permissions.py` after every agent call: unauthorized changes are rolled back and the phase dies. The session runtime under `data_dir` is always writable — a read-only agent is read-only with respect to the REPO, never mute.
+9. **`tools:` is a capability list, `writes:` is the boundary** — `bash` runs anything (including `git checkout`) and `write` reaches any path, so a tool list can never make "this agent changes nothing" true. `writes:` per agent, active prompts, and `protected_files` in defaults are enforced in `adw_modules/permissions.py` after every harness turn: unauthorized changes are rolled back and the phase dies before parsing or retrying. Only the current `{data_dir}/sessions/{adw_id}/` runtime is always writable — a read-only agent is read-only with respect to the REPO, never mute.
 10. **Every ADW ends in `run.finish()`** — phases passing is not the same as the run being accepted. A test phase that ran a red suite succeeded at its job. Pass `accepted=` so the exit code, the session status, and the banner are decided together and cannot disagree.
 
 ## v1 scope
 
-Pi coding agent only (`coding_agent: pi`), default model `gemini-3.6-flash` via openrouter, thinking `medium`. `claude_code` is schema-valid but stubbed until v2. The visualizer app ships in a later pass — observe via sqlite queries until then.
+The starter roster defaults to Claude Code Sonnet, with the reviewer on Codex GPT-5.6 Terra. `pi`, `claude_code`, `codex`, `kiro_cli`, and `antigravity` are all implemented and selectable per agent — see `references/config.md#harnesses`. `harness_engineering` (Pi extensions) stays Pi-only; setting it on any other harness fails validation. `tools:` is only honored by `pi` and `claude_code`: `codex`, `kiro_cli`, and `antigravity` have no allowlist flag to map onto, so they require `tools: null` and rely on `permissions.py` for the boundary. The visualizer app ships in a later pass — observe via sqlite queries until then.

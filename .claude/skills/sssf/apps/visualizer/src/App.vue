@@ -10,13 +10,40 @@ const route = useRoute()
   <div class="app">
     <header class="topbar">
       <nav class="crumbs">
-        <!-- Inline copy of public/logo.svg (the favicon) so the mark renders
-             crisply with no fetch; keep the two in sync. -->
-        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
-          <rect x="4" y="6" width="17" height="5" rx="2.5" fill="#e8b64a" />
-          <rect x="8" y="13.5" width="20" height="5" rx="2.5" fill="#c89bff" />
-          <rect x="4" y="21" width="13" height="5" rx="2.5" fill="#5ad2dd" />
-        </svg>
+        <!-- Inline copy of public/logo.svg's glyph (the favicon adds the
+             background square around this same shape) — keep the two in sync. -->
+        <span class="mark">
+          <svg viewBox="0 0 32 32" aria-hidden="true">
+            <path
+              d="M19.4 7.5 L17.4 9.5 L19.4 11.5"
+              stroke="#fff"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-opacity="0.85"
+              fill="none"
+            />
+            <path
+              d="M24 7.5 L26 9.5 L24 11.5"
+              stroke="#fff"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-opacity="0.85"
+              fill="none"
+            />
+            <rect x="20" y="12" width="3.2" height="5.5" fill="#fff" fill-opacity="0.9" />
+            <path
+              d="M5 20 L5 17.5 L8.5 14 L8.5 17.5 L12 14 L12 17.5 L15.5 14 L15.5 17.5 L27 17.5 L27 20 Z"
+              fill="#fff"
+              fill-opacity="0.9"
+            />
+            <rect x="5" y="20" width="22" height="8" rx="1" fill="#fff" fill-opacity="0.9" />
+            <rect x="8" y="22.5" width="3" height="3" fill="#1b1e24" fill-opacity="0.4" />
+            <rect x="13.5" y="22.5" width="3" height="3" fill="#1b1e24" fill-opacity="0.3" />
+            <rect x="19" y="22.5" width="3" height="3" fill="#1b1e24" fill-opacity="0.2" />
+          </svg>
+        </span>
         <span class="brand">Super Simple Software Factory</span>
         <span class="sep">›</span>
         <a :href="hrefFor()" :class="{ current: !route.adwId }">sessions</a>
@@ -46,28 +73,13 @@ const route = useRoute()
   align-items: center;
   justify-content: space-between;
   padding: 15px 28px;
-  background: rgba(11, 15, 24, 0.72);
+  background: color-mix(in srgb, var(--panel) 85%, transparent);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
   z-index: 10;
-}
-
-/* Gradient hairline instead of a hard border — the brand colors, whispered. */
-.topbar::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    rgba(200, 155, 255, 0.45),
-    rgba(90, 210, 221, 0.35) 40%,
-    rgba(90, 210, 221, 0.06)
-  );
 }
 
 .crumbs {
@@ -78,20 +90,26 @@ const route = useRoute()
   min-width: 0;
 }
 
-.logo {
-  width: 28px;
-  height: 28px;
+.mark {
+  width: 26px;
+  height: 26px;
   flex: none;
-  filter: drop-shadow(0 0 8px rgba(200, 155, 255, 0.35));
+  border-radius: 6px;
+  background: var(--blue);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mark svg {
+  width: 17px;
+  height: 17px;
 }
 
 .brand {
-  background: linear-gradient(90deg, var(--purple), var(--cyan));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  font-weight: 700;
-  letter-spacing: 0.05em;
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: 0.02em;
   white-space: nowrap;
 }
 
@@ -125,7 +143,7 @@ const route = useRoute()
   height: 9px;
   border-radius: 50%;
   background: var(--green);
-  box-shadow: 0 0 10px rgba(74, 222, 128, 0.7);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--green) 55%, transparent);
   animation: pulse 1.6s ease-in-out infinite;
 }
 </style>
