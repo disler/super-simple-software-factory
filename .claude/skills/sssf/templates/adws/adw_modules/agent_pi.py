@@ -107,10 +107,15 @@ def _context_tokens(usage: dict) -> int:
 
 def context_window(provider: str, model_id: str) -> int:
     """The model's context ceiling from pi's merged model catalog."""
-    registry = json.loads(Path(MODELS_JSON).read_text())
+    registry = {}
+    try:
+        registry = json.loads(Path(MODELS_JSON).read_text())
+    except FileNotFoundError:
+        pass    # models.json is optional user config; built-ins live only in the CLI catalog
     for model in registry.get("providers", {}).get(provider, {}).get("models", []):
-        if model.get("id") == model_id:
-            return int(model.get("contextWindow") or 0)
+        window = int(model.get("contextWindow") or 0)
+        if model.get("id") == model_id and window:
+            return window
     for listed_provider, listed_model, window in _pi_catalog():
         if listed_provider == provider and listed_model == model_id:
             return window
